@@ -1,0 +1,17 @@
+{
+  "name": "ctrack-mongodb-cdf-provider",
+  "version": "1.0.0",
+  "description": "ArcGIS Enterprise Custom Data Feed Provider for CTRACK MongoDB ship tracking data",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "mongodb": "^6.3.0"
+  },
+  "arcgis": {
+    "type": "customDataFeed",
+    "displayName": "CTRACK Ship Tracking - MongoDB",
+    "description": "Real-time vessel tracking feed from MongoDB ctrack_data collection"
+  }
+}

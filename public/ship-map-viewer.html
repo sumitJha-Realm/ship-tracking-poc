@@ -1,0 +1,1578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Ship Tracking — Map Viewer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <link rel="stylesheet" href="https://js.arcgis.com/4.29/esri/themes/dark/main.css"/>
+  <script src="https://js.arcgis.com/4.29/"></script>
+  <style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:#1a1a2e}
+#header{position:fixed;top:0;left:0;right:0;z-index:2000;height:52px;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);padding:0 20px;color:#fff;box-shadow:0 2px 12px rgba(0,0,0,.5)}
+#header h1{font-size:18px;font-weight:600;letter-spacing:.5px}
+#header h1 span{color:#00d4ff}
+#header-right{display:flex;align-items:center;gap:12px}
+#track-count{font-size:13px;color:#aaa;background:rgba(255,255,255,.08);padding:4px 12px;border-radius:12px}
+.toggle-wrapper{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.08);border-radius:20px;padding:4px 14px}
+.toggle-label{font-size:12px;font-weight:500;color:#ccc;text-transform:uppercase;letter-spacing:.5px}
+.toggle-label.active{color:#00d4ff}
+.toggle-switch{position:relative;width:48px;height:26px;cursor:pointer}
+.toggle-switch input{display:none}
+.toggle-slider{position:absolute;top:0;left:0;right:0;bottom:0;background:#3a6ea5;border-radius:26px;transition:background .3s}
+.toggle-slider::before{content:'';position:absolute;width:20px;height:20px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:transform .3s}
+.toggle-switch input:checked+.toggle-slider{background:#00d4ff}
+.toggle-switch input:checked+.toggle-slider::before{transform:translateX(22px)}
+#osm-map{position:fixed;top:52px;left:0;right:0;bottom:0;z-index:1000}
+#arcgis-map{position:fixed;top:52px;left:0;right:0;bottom:0;z-index:1000;display:none}
+.tool-btn{background:linear-gradient(135deg,#00d4ff,#0080ff);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer;font-weight:600;transition:transform .15s,box-shadow .15s;box-shadow:0 2px 8px rgba(0,128,255,.3)}
+.tool-btn:hover{transform:scale(1.05);box-shadow:0 4px 16px rgba(0,128,255,.5)}
+.tool-btn.active{background:linear-gradient(135deg,#ff4444,#cc0000);box-shadow:0 2px 8px rgba(255,0,0,.3)}
+.tool-btn.secondary{background:linear-gradient(135deg,#444,#666)}
+/* Toolbar */
+#toolbar{position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:2000;display:flex;gap:8px;background:rgba(15,12,41,.92);border:1px solid rgba(0,212,255,.2);border-radius:12px;padding:8px 14px;backdrop-filter:blur(10px)}
+/* Side panels */
+.side-panel{position:fixed;top:52px;right:0;bottom:0;width:420px;z-index:1800;background:rgba(15,12,41,.96);border-left:1px solid rgba(0,212,255,.2);backdrop-filter:blur(12px);transform:translateX(100%);transition:transform .3s ease;overflow-y:auto;color:#ddd;font-size:13px}
+.side-panel.open{transform:translateX(0)}
+.panel-header{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid rgba(0,212,255,.15);position:sticky;top:0;background:rgba(15,12,41,.98);z-index:1}
+.panel-header h3{color:#00d4ff;font-size:15px;margin:0}
+.panel-close{background:none;border:none;color:#888;font-size:20px;cursor:pointer;padding:4px 8px;border-radius:4px}
+.panel-close:hover{color:#ff4444;background:rgba(255,68,68,.1)}
+.panel-body{padding:16px 18px}
+.form-group{margin-bottom:14px}
+.form-group label{display:block;color:#888;font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.form-group input,.form-group select{width:100%;padding:8px 10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:13px;outline:none}
+.form-group input:focus{border-color:#00d4ff}
+.form-group .row-2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.result-count{padding:10px 0;color:#00d4ff;font-weight:600;font-size:14px;border-bottom:1px solid rgba(255,255,255,.08);margin-bottom:10px}
+.result-table{width:100%;border-collapse:collapse;font-size:11px}
+.result-table th{text-align:left;color:#00d4ff;padding:6px 8px;border-bottom:1px solid rgba(0,212,255,.2);position:sticky;top:0;background:rgba(15,12,41,.98)}
+.result-table td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.05);color:#ccc}
+.result-table tr:hover td{background:rgba(0,212,255,.06)}
+/* Perf dashboard */
+.perf-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}
+.perf-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:12px;text-align:center}
+.perf-card .perf-val{font-size:22px;font-weight:700;color:#00d4ff;margin-bottom:2px}
+.perf-card .perf-label{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.5px}
+.perf-card.warn .perf-val{color:#ff9800}
+.perf-card.good .perf-val{color:#4caf50}
+.perf-card.danger .perf-val{color:#ff4444}
+.perf-card.wide{grid-column:1/-1}
+.bench-bar{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.bench-bar .bench-name{width:120px;font-size:11px;color:#aaa;text-align:right}
+.bench-bar .bench-fill{height:18px;border-radius:4px;min-width:2px;display:flex;align-items:center;padding:0 6px;font-size:10px;color:#fff;font-weight:600}
+.rate-bar-bg{width:100%;height:26px;background:rgba(255,255,255,.06);border-radius:6px;overflow:hidden;position:relative;margin:8px 0}
+.rate-bar-fill{height:100%;border-radius:6px;transition:width .5s;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff}
+/* Info panel */
+#info-panel{position:fixed;bottom:16px;left:16px;z-index:2000;background:rgba(15,12,41,.92);border:1px solid rgba(0,212,255,.3);border-radius:12px;padding:14px 18px;color:#ddd;font-size:12px;min-width:220px;backdrop-filter:blur(10px);box-shadow:0 4px 20px rgba(0,0,0,.4)}
+#info-panel h3{color:#00d4ff;margin-bottom:8px;font-size:13px}
+#info-panel .row{display:flex;justify-content:space-between;padding:2px 0}
+#info-panel .row .label{color:#888}
+#info-panel .row .value{color:#fff;font-weight:600}
+/* Legend */
+#legend{position:fixed;top:110px;right:16px;z-index:1700;background:rgba(15,12,41,.92);border:1px solid rgba(0,212,255,.2);border-radius:12px;padding:12px 16px;color:#ddd;font-size:11px;backdrop-filter:blur(10px);max-height:340px;overflow-y:auto;box-shadow:0 4px 20px rgba(0,0,0,.4)}
+#legend h4{color:#00d4ff;margin-bottom:8px;font-size:12px}
+.legend-item{display:flex;align-items:center;gap:8px;padding:2px 0}
+.legend-dot{width:12px;height:12px;border-radius:50%;border:1px solid rgba(255,255,255,.3);flex-shrink:0}
+#loading{position:fixed;top:52px;left:0;right:0;bottom:0;z-index:3000;background:rgba(15,12,41,.85);display:flex;align-items:center;justify-content:center;color:#00d4ff;font-size:18px;flex-direction:column;gap:12px}
+.spinner{width:40px;height:40px;border:3px solid rgba(0,212,255,.2);border-top-color:#00d4ff;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#refresh-btn{position:fixed;bottom:16px;right:16px;z-index:2000;background:linear-gradient(135deg,#00d4ff,#0080ff);color:#fff;border:none;border-radius:50%;width:48px;height:48px;font-size:20px;cursor:pointer;box-shadow:0 4px 16px rgba(0,128,255,.4);transition:transform .2s,box-shadow .2s}
+#refresh-btn:hover{transform:scale(1.1);box-shadow:0 6px 24px rgba(0,128,255,.6)}
+#refresh-btn.spinning svg{animation:spin .8s linear infinite}
+/* Query Log Drawer */
+#query-drawer{position:fixed;left:0;right:0;bottom:0;z-index:2500;background:rgba(10,8,30,.97);border-top:2px solid rgba(0,212,255,.3);transition:height .3s ease;height:36px;overflow:hidden;backdrop-filter:blur(12px)}
+#query-drawer.expanded{height:320px}
+#query-drawer-header{display:flex;align-items:center;justify-content:space-between;padding:6px 16px;cursor:pointer;user-select:none;height:36px}
+#query-drawer-header h4{color:#00d4ff;font-size:12px;margin:0;display:flex;align-items:center;gap:8px}
+#query-drawer-header .badge{background:#00d4ff;color:#0f0c29;font-size:10px;font-weight:700;padding:1px 7px;border-radius:8px}
+#query-drawer-header .toggle-arrow{color:#888;font-size:14px;transition:transform .3s}
+#query-drawer.expanded #query-drawer-header .toggle-arrow{transform:rotate(180deg)}
+#query-log-body{height:calc(100% - 36px);overflow-y:auto;padding:0 8px 8px}
+#query-log-table{width:100%;border-collapse:collapse;font-size:10px;font-family:'SF Mono',Consolas,'Courier New',monospace}
+#query-log-table th{text-align:left;color:#00d4ff;padding:4px 6px;border-bottom:1px solid rgba(0,212,255,.15);position:sticky;top:0;background:rgba(10,8,30,.98);font-size:10px;white-space:nowrap}
+#query-log-table td{padding:3px 6px;border-bottom:1px solid rgba(255,255,255,.03);color:#aaa;vertical-align:top;max-width:0}
+#query-log-table tr.ql-row{cursor:pointer}
+#query-log-table tr.ql-row:hover td{background:rgba(0,212,255,.04)}
+#query-log-table tr.ql-row.selected td{background:rgba(0,212,255,.08);border-bottom-color:rgba(0,212,255,.15)}
+#query-log-table tr.ql-detail-row{display:none}
+#query-log-table tr.ql-detail-row.open{display:table-row}
+#query-log-table tr.ql-detail-row td{padding:0;border-bottom:1px solid rgba(0,212,255,.1)}
+.ql-detail{padding:8px 12px 10px;background:rgba(0,212,255,.03);border-left:3px solid #00d4ff;margin:0}
+.ql-detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 20px}
+.ql-detail-item{display:flex;flex-direction:column;gap:1px}
+.ql-detail-item.full{grid-column:1/-1}
+.ql-detail-label{font-size:9px;color:#00d4ff;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.ql-detail-value{font-size:11px;color:#ddd;word-break:break-all;line-height:1.4}
+.ql-detail-value.json{background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.06);border-radius:4px;padding:4px 8px;font-family:'SF Mono',Consolas,'Courier New',monospace;font-size:10px;color:#aaa;max-height:120px;overflow-y:auto;white-space:pre-wrap}
+.ql-detail-value .ql-key{color:#9370db}
+.ql-detail-value .ql-str{color:#4caf50}
+.ql-detail-value .ql-num{color:#ff9800}
+.ql-detail-value .ql-null{color:#555}
+.ql-expand-arrow{display:inline-block;width:12px;color:#555;font-size:8px;transition:transform .2s;text-align:center}
+.ql-row.selected .ql-expand-arrow{color:#00d4ff;transform:rotate(90deg)}
+.ql-time{color:#555;white-space:nowrap;width:70px}
+.ql-method{font-weight:700;width:36px}
+.ql-method.GET{color:#4caf50}
+.ql-method.POST{color:#ff9800}
+.ql-endpoint{color:#ddd;white-space:nowrap;width:140px;overflow:hidden;text-overflow:ellipsis}
+.ql-coll{color:#9370db;white-space:nowrap;width:100px}
+.ql-op{color:#00d4ff;white-space:nowrap;width:90px}
+.ql-query{color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:250px}
+.ql-dur{text-align:right;font-weight:700;white-space:nowrap;width:50px}
+.ql-dur.fast{color:#4caf50}
+.ql-dur.medium{color:#ff9800}
+.ql-dur.slow{color:#ff4444}
+.ql-count{color:#ccc;text-align:right;width:50px;white-space:nowrap}
+.ql-idx{color:#DAA520;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:130px}
+.ql-id{color:#555;width:28px;white-space:nowrap}
+.ship-popup .leaflet-popup-content-wrapper{background:rgba(15,12,41,.95);color:#ddd;border:1px solid rgba(0,212,255,.3);border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,.5)}
+.ship-popup .leaflet-popup-tip{background:rgba(15,12,41,.95)}
+.ship-popup .leaflet-popup-content{margin:10px 14px;font-size:12px;line-height:1.6}
+.popup-name{color:#00d4ff;font-weight:700;font-size:14px;margin-bottom:4px}
+.popup-row{display:flex;justify-content:space-between;gap:16px}
+.popup-label{color:#888}
+.popup-value{color:#fff;font-weight:600}
+.popup-history-btn{display:block;width:100%;margin-top:8px;padding:6px 0;background:linear-gradient(135deg,#00d4ff,#0080ff);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;letter-spacing:.3px;transition:transform .15s}
+.popup-history-btn:hover{transform:scale(1.03)}
+.popup-action-row{display:flex;gap:6px;margin-top:6px}
+.popup-toi-btn,.popup-remark-btn{flex:1;padding:6px 0;border:none;border-radius:6px;font-size:10px;font-weight:700;cursor:pointer;transition:transform .15s}
+.popup-toi-btn{background:linear-gradient(135deg,#ff9800,#f57c00);color:#fff}
+.popup-toi-btn:hover{transform:scale(1.03)}
+.popup-toi-btn.is-toi{background:linear-gradient(135deg,#4caf50,#388e3c)}
+.popup-remark-btn{background:linear-gradient(135deg,#9c27b0,#7b1fa2);color:#fff}
+.popup-remark-btn:hover{transform:scale(1.03)}
+/* User ID bar */
+#user-bar{display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.06);border-radius:8px;padding:3px 10px}
+#user-bar label{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.3px}
+#user-bar input{background:transparent;border:1px solid rgba(255,255,255,.15);border-radius:4px;color:#fff;font-size:12px;padding:2px 8px;width:100px;outline:none}
+#user-bar input:focus{border-color:#00d4ff}
+/* Benchmark panel */
+.bench-config{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px}
+.bench-progress{margin:14px 0;padding:14px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:8px}
+.bench-progress .phase{color:#00d4ff;font-weight:700;font-size:14px;margin-bottom:6px}
+.bench-progress .bar-bg{height:8px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden}
+.bench-progress .bar-fill{height:100%;background:linear-gradient(90deg,#00d4ff,#0080ff);border-radius:4px;transition:width .5s}
+.bench-progress .detail{color:#888;font-size:11px;margin-top:6px}
+.bench-report-section{margin-top:16px}
+.bench-report-section h4{color:#00d4ff;font-size:13px;margin-bottom:8px;border-bottom:1px solid rgba(0,212,255,.15);padding-bottom:6px}
+.bench-table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:14px}
+.bench-table th{text-align:left;color:#00d4ff;padding:5px 6px;border-bottom:1px solid rgba(0,212,255,.2);font-size:10px}
+.bench-table td{padding:4px 6px;border-bottom:1px solid rgba(255,255,255,.04);color:#ccc}
+.bench-table tr:hover td{background:rgba(0,212,255,.04)}
+.bench-table .num{text-align:right;font-weight:600;font-family:'SF Mono',Consolas,monospace}
+.bench-table .fast{color:#4caf50}
+.bench-table .medium{color:#ff9800}
+.bench-table .slow{color:#ff4444}
+.bench-rate-bar{display:flex;align-items:center;gap:6px;margin-bottom:3px;font-size:10px}
+.bench-rate-bar .bar{height:10px;border-radius:3px;background:linear-gradient(90deg,#00d4ff,#0080ff);min-width:2px}
+.bench-rate-bar .lbl{color:#888;width:40px;text-align:right}
+.bench-rate-bar .val{color:#ddd;width:80px}
+.bench-save-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 20px;background:linear-gradient(135deg,#4caf50,#388e3c);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer}
+.bench-save-btn:hover{transform:scale(1.03)}
+/* Remark panel extras */
+.remark-item{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:10px 12px;margin-bottom:8px}
+.remark-item .remark-meta{display:flex;justify-content:space-between;font-size:10px;color:#888;margin-bottom:4px}
+.remark-item .remark-text{color:#ddd;font-size:12px;line-height:1.5}
+.remark-item .remark-delete{background:none;border:none;color:#ff4444;cursor:pointer;font-size:10px;padding:2px 6px;border-radius:4px}
+.remark-item .remark-delete:hover{background:rgba(255,68,68,.15)}
+/* TOI List */
+.toi-ship-card{display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:8px;margin-bottom:6px;cursor:pointer;transition:background .15s,border-color .15s}
+.toi-ship-card:hover{background:rgba(0,212,255,.06);border-color:rgba(0,212,255,.2)}
+.toi-ship-dot{width:14px;height:14px;border-radius:50%;flex-shrink:0;border:1.5px solid rgba(0,0,0,.5)}
+.toi-ship-info{flex:1;min-width:0}
+.toi-ship-name{color:#fff;font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.toi-ship-meta{color:#888;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.toi-ship-speed{color:#00d4ff;font-size:12px;font-weight:700;white-space:nowrap}
+.toi-ship-actions{display:flex;gap:4px;flex-shrink:0}
+.toi-remove-btn{background:rgba(255,68,68,.15);border:1px solid rgba(255,68,68,.2);color:#ff6666;font-size:10px;padding:3px 8px;border-radius:4px;cursor:pointer;font-weight:600}
+.toi-remove-btn:hover{background:rgba(255,68,68,.3)}
+.toi-empty{color:#555;font-size:13px;text-align:center;padding:30px 0}
+.remark-input-row{display:flex;gap:6px;margin-bottom:10px}
+.remark-input-row textarea{flex:1;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15);border-radius:6px;color:#fff;font-size:12px;padding:8px;resize:vertical;min-height:60px;outline:none;font-family:inherit}
+.remark-input-row textarea:focus{border-color:#00d4ff}
+.page-controls{display:flex;align-items:center;justify-content:space-between;margin:10px 0;gap:8px}
+.page-controls button{padding:6px 14px;font-size:11px}
+.page-info{color:#888;font-size:12px;white-space:nowrap}
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div id="header">
+    <h1>Ship <span>Tracking</span> — Map View</h1>
+    <div id="header-right">
+      <div id="user-bar">
+        <label>User ID</label>
+        <input type="text" id="user-id-input" value="user_01" placeholder="user_01"/>
+      </div>
+      <div id="track-count">Loading...</div>
+      <div class="toggle-wrapper">
+        <span class="toggle-label active" id="lbl-osm">OSM</span>
+        <label class="toggle-switch"><input type="checkbox" id="map-toggle"/><span class="toggle-slider"></span></label>
+        <span class="toggle-label" id="lbl-arcgis">ArcGIS</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div id="toolbar">
+    <button class="tool-btn" id="btn-draw-rect" title="Draw rectangle to search ships within area">GeoWithin Search</button>
+    <button class="tool-btn secondary" id="btn-history" title="Search ship history in timeseries">Timeseries History</button>
+    <button class="tool-btn secondary" id="btn-toi-list" title="View all ships marked as Track of Interest" style="background:linear-gradient(135deg,#ff9800,#f57c00)">My TOI</button>
+    <button class="tool-btn secondary" id="btn-perf" title="Live DB performance dashboard">Performance</button>
+    <button class="tool-btn secondary" id="btn-benchmark" title="Run performance benchmark" style="background:linear-gradient(135deg,#e91e63,#c2185b)">Benchmark</button>
+    <button class="tool-btn secondary" id="btn-clear-geo" title="Clear geo search results" style="display:none">Clear Geo</button>
+  </div>
+
+  <!-- Map containers -->
+  <div id="osm-map"></div>
+  <div id="arcgis-map"></div>
+
+  <!-- Legend -->
+  <div id="legend"><h4>Nationality Colors</h4></div>
+
+  <!-- Info panel -->
+  <div id="info-panel">
+    <h3>Map Statistics</h3>
+    <div class="row"><span class="label">Tracks shown</span><span class="value" id="stat-tracks">0</span></div>
+    <div class="row"><span class="label">Query time</span><span class="value" id="stat-time">—</span></div>
+    <div class="row"><span class="label">Active map</span><span class="value" id="stat-map">OpenStreetMap</span></div>
+    <div class="row"><span class="label">Last refresh</span><span class="value" id="stat-refresh">—</span></div>
+  </div>
+
+  <!-- Refresh button -->
+  <button id="refresh-btn" title="Refresh tracks">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+    </svg>
+  </button>
+
+  <!-- Loading overlay -->
+  <div id="loading"><div class="spinner"></div><span>Loading ship tracks...</span></div>
+
+  <!-- Query Log Drawer -->
+  <div id="query-drawer">
+    <div id="query-drawer-header" onclick="toggleQueryDrawer()">
+      <h4>MongoDB Query Log <span class="badge" id="ql-badge">0</span></h4>
+      <span class="toggle-arrow">&#9650;</span>
+    </div>
+    <div id="query-log-body">
+      <table id="query-log-table">
+        <thead><tr><th></th><th>#</th><th>Time</th><th></th><th>Endpoint</th><th>Collection</th><th>Operation</th><th>Query / Filter</th><th>Duration</th><th>Results</th><th>Index Used</th></tr></thead>
+        <tbody id="ql-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- GeoWithin Panel -->
+  <div class="side-panel" id="panel-geo">
+    <div class="panel-header">
+      <h3>GeoWithin Search</h3>
+      <button class="panel-close" onclick="closePanel('geo')">&times;</button>
+    </div>
+    <div class="panel-body">
+      <p style="color:#888;margin-bottom:12px;font-size:12px">Draw a rectangle on the map to find ships within that area using MongoDB <code style="color:#00d4ff">$geoWithin</code> + 2dsphere index.</p>
+      <button class="tool-btn" id="btn-start-draw" style="width:100%;margin-bottom:12px">Draw Rectangle on Map</button>
+      <div style="text-align:center;color:#555;margin-bottom:12px">— or enter coordinates —</div>
+      <div class="form-group">
+        <label>Bounding Box</label>
+        <div class="row-2">
+          <input type="number" id="geo-south" placeholder="South Lat" step="any" value="-10"/>
+          <input type="number" id="geo-north" placeholder="North Lat" step="any" value="30"/>
+        </div>
+        <div class="row-2" style="margin-top:6px">
+          <input type="number" id="geo-west" placeholder="West Lng" step="any" value="40"/>
+          <input type="number" id="geo-east" placeholder="East Lng" step="any" value="100"/>
+        </div>
+      </div>
+      <button class="tool-btn" id="btn-run-geo" style="width:100%">Search Ships in Area</button>
+      <div id="geo-results" style="margin-top:14px"></div>
+    </div>
+  </div>
+
+  <!-- Timeseries History Panel -->
+  <div class="side-panel" id="panel-history">
+    <div class="panel-header">
+      <h3>Timeseries History</h3>
+      <button class="panel-close" onclick="closePanel('history')">&times;</button>
+    </div>
+    <div class="panel-body">
+      <p style="color:#888;margin-bottom:12px;font-size:12px">Query <code style="color:#00d4ff">CTRACK.tracks_local_timeseries</code> by SUID and time range. Shows historical positions from the time-series collection.</p>
+      <div class="form-group">
+        <label>SUID (Ship Unique ID)</label>
+        <input type="text" id="ts-suid" placeholder="e.g. 273000001_19-02-2026_19:18:54:426"/>
+      </div>
+      <div class="form-group">
+        <label>Time Range</label>
+        <div class="row-2">
+          <input type="datetime-local" id="ts-from"/>
+          <input type="datetime-local" id="ts-to"/>
+        </div>
+      </div>
+      <div class="form-group">
+            <label>Max Trail Points (map polyline)</label>
+    <input type="number" id="ts-limit" value="5000" min="1" max="10000"/>
+      </div>
+      <button class="tool-btn" id="btn-run-history" style="width:100%">Search History</button>
+      <p style="color:#555;font-size:10px;margin-top:6px;text-align:center">Server-side pagination — 20 rows per page. Click any row to pan map.</p>
+      <div style="margin-top:8px">
+        <button class="tool-btn secondary" id="btn-clear-history" style="width:100%;display:none">Clear Trail</button>
+      </div>
+      <div id="history-results" style="margin-top:14px"></div>
+    </div>
+  </div>
+
+  <!-- TOI List Panel -->
+  <div class="side-panel" id="panel-toi">
+    <div class="panel-header">
+      <h3>Track of Interest <span id="toi-count-badge" style="font-size:12px;color:#ff9800">(0)</span></h3>
+      <button class="panel-close" onclick="closePanel('toi')">&times;</button>
+    </div>
+    <div class="panel-body">
+      <p style="color:#888;margin-bottom:10px;font-size:12px">Ships you marked as Track of Interest. Click a ship to fly to its location on the map.</p>
+      <button class="tool-btn" id="btn-refresh-toi" style="width:100%;margin-bottom:14px">Refresh TOI List</button>
+      <div id="toi-list"><div class="toi-empty">Loading...</div></div>
+    </div>
+  </div>
+
+  <!-- Ship Detail / Remarks Panel -->
+  <div class="side-panel" id="panel-ship">
+    <div class="panel-header">
+      <h3 id="ship-panel-title">Ship Details</h3>
+      <button class="panel-close" onclick="closePanel('ship')">&times;</button>
+    </div>
+    <div class="panel-body">
+      <div id="ship-detail-info"></div>
+      <div style="margin:14px 0 8px"><h4 style="color:#00d4ff;font-size:13px">Add Remark</h4></div>
+      <div class="remark-input-row">
+        <textarea id="remark-text" placeholder="Enter remark text..."></textarea>
+      </div>
+      <button class="tool-btn" id="btn-add-remark" style="width:100%;margin-bottom:16px">Submit Remark</button>
+      <div><h4 style="color:#00d4ff;font-size:13px;margin-bottom:10px">Remarks <span id="remark-count-badge" style="font-size:11px;color:#888">(0)</span></h4></div>
+      <div id="remarks-list"><p style="color:#555;font-size:12px">No remarks yet.</p></div>
+    </div>
+  </div>
+
+  <!-- Benchmark Panel -->
+  <div class="side-panel" id="panel-bench" style="width:520px">
+    <div class="panel-header">
+      <h3>Performance Benchmark</h3>
+      <button class="panel-close" onclick="closePanel('bench')">&times;</button>
+    </div>
+    <div class="panel-body">
+      <p style="color:#888;margin-bottom:12px;font-size:12px">Run a timed performance test with configurable ingestion load. Measures all query patterns under sustained write pressure.</p>
+      <div class="bench-config">
+        <div class="form-group"><label>Ops / Second</label><input type="number" id="bench-ops" value="1000" min="50" max="10000"/></div>
+        <div class="form-group"><label>Duration (sec)</label><input type="number" id="bench-duration" value="60" min="10" max="600"/></div>
+        <div class="form-group"><label>Sample Every (sec)</label><input type="number" id="bench-interval" value="10" min="5" max="60"/></div>
+      </div>
+      <button class="tool-btn" id="btn-run-bench" style="width:100%">Start Benchmark</button>
+      <button class="tool-btn secondary" id="btn-cancel-bench" style="width:100%;margin-top:6px;display:none">Cancel</button>
+      <div id="bench-progress" style="display:none"></div>
+      <div id="bench-report"></div>
+    </div>
+  </div>
+
+  <!-- Performance Panel -->
+  <div class="side-panel" id="panel-perf">
+    <div class="panel-header">
+      <h3>Performance Dashboard</h3>
+      <button class="panel-close" onclick="closePanel('perf')">&times;</button>
+    </div>
+    <div class="panel-body" id="perf-body">
+      <p style="color:#888;margin-bottom:12px;font-size:12px">Live database performance metrics. Auto-refreshes every 3 seconds. Target ingestion: <strong style="color:#00d4ff">4,000 ops/sec</strong>.</p>
+      <div id="perf-content"><div class="spinner" style="margin:30px auto"></div></div>
+    </div>
+  </div>
+  <script>
+    // ================================================================
+    //  Configuration
+    // ================================================================
+    const API_BASE = window.location.origin;
+    const DEFAULT_CENTER = [20, 40];
+    const DEFAULT_ZOOM = 3;
+    const TRACK_LIMIT = 5000;
+    const AUTO_REFRESH_MS = 30000;
+
+    const NATIONALITY_COLORS = {
+      273:{color:'#FF0000',name:'Nationality 273'},419:{color:'#e4e901',name:'Nationality 419'},
+      501:{color:'#00FF00',name:'Nationality 501'},502:{color:'#FF8C00',name:'Nationality 502'},
+      503:{color:'#1E90FF',name:'Nationality 503'},504:{color:'#800080',name:'Nationality 504'},
+      505:{color:'#00CED1',name:'Nationality 505'},506:{color:'#FF69B4',name:'Nationality 506'},
+      508:{color:'#8B4513',name:'Nationality 508'},510:{color:'#4682B4',name:'Nationality 510'},
+      511:{color:'#32CD32',name:'Nationality 511'},512:{color:'#DC143C',name:'Nationality 512'},
+      514:{color:'#FF4500',name:'Nationality 514'},515:{color:'#4169E1',name:'Nationality 515'},
+      516:{color:'#2E8B57',name:'Nationality 516'},518:{color:'#DAA520',name:'Nationality 518'},
+      519:{color:'#9370DB',name:'Nationality 519'},520:{color:'#20B2AA',name:'Nationality 520'},
+    };
+
+    // ================================================================
+    //  State
+    // ================================================================
+    let currentMode = 'osm';
+    let osmMap = null, osmClusterGroup = null;
+    let arcgisView = null, arcgisShipLayer = null, arcgisInitialized = false;
+    let trackData = [];
+    let refreshTimer = null;
+    let drawControl = null, drawnItems = null;
+    let geoResultLayer = null;
+    let historyTrailLayer = null, historyMarkerLayer = null;
+    let perfTimer = null;
+    let qlLastId = 0;
+    let qlTimer = null;
+    let qlTotal = 0;
+    // Pagination state for history (server-side pagination)
+    let historyPage = 1;
+    const PAGE_SIZE = 20;
+    let historyPageData = [];   // current page rows from server
+    let historyTotalCount = 0;  // total matching docs (from server)
+    let historyTotalPages = 1;
+    let historyShipName = '';
+    let historySuid = '';        // current SUID being viewed
+    let historyTimeFrom = '';    // cached time filters for page nav
+    let historyTimeTo = '';
+    let historyQueryMs = 0;     // last query time for display
+
+    // ================================================================
+    //  Legend
+    // ================================================================
+    function buildLegend() {
+      const el = document.getElementById('legend');
+      let html = '<h4>Nationality Colors</h4>';
+      for (const [code, info] of Object.entries(NATIONALITY_COLORS)) {
+        html += '<div class="legend-item"><div class="legend-dot" style="background:'+info.color+'"></div><span>'+info.name+'</span></div>';
+      }
+      el.innerHTML = html;
+    }
+
+    // ================================================================
+    //  Panel management
+    // ================================================================
+    let currentShipSuid = null;
+
+    function getUserId() { return (document.getElementById('user-id-input').value || '').trim() || 'user_01'; }
+
+    function openPanel(name) {
+      ['geo','history','perf','ship','toi','bench'].forEach(p => {
+        document.getElementById('panel-'+p).classList.toggle('open', p === name);
+      });
+      if (name === 'perf') startPerfPolling();
+      else stopPerfPolling();
+      if (name === 'toi') loadToiList();
+    }
+    function closePanel(name) {
+      document.getElementById('panel-'+name).classList.remove('open');
+      if (name === 'perf') stopPerfPolling();
+    }
+
+    // ================================================================
+    //  OpenStreetMap (Leaflet)
+    // ================================================================
+    function initOSM() {
+      osmMap = L.map('osm-map', { center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, zoomControl: true });
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OSM &copy; CARTO', subdomains: 'abcd', maxZoom: 19
+      }).addTo(osmMap);
+
+      osmClusterGroup = L.markerClusterGroup({
+        maxClusterRadius: 50, spiderfyOnMaxZoom: true, showCoverageOnHover: false,
+        iconCreateFunction: function(cluster) {
+          const count = cluster.getChildCount();
+          const size = count > 100 ? 48 : count > 30 ? 40 : 32;
+          return L.divIcon({
+            html: '<div style="background:rgba(0,212,255,.25);border:2px solid #00d4ff;border-radius:50%;width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px">'+count+'</div>',
+            className: '', iconSize: [size, size]
+          });
+        }
+      });
+      osmMap.addLayer(osmClusterGroup);
+
+      // Draw layers
+      drawnItems = new L.FeatureGroup();
+      osmMap.addLayer(drawnItems);
+      geoResultLayer = L.layerGroup().addTo(osmMap);
+      historyTrailLayer = L.layerGroup().addTo(osmMap);
+      historyMarkerLayer = L.layerGroup().addTo(osmMap);
+
+      // Draw control
+      drawControl = new L.Control.Draw({
+        draw: { polyline: false, polygon: false, circle: false, circlemarker: false, marker: false,
+          rectangle: { shapeOptions: { color: '#00d4ff', weight: 2, fillOpacity: 0.1 } }
+        },
+        edit: { featureGroup: drawnItems }
+      });
+
+      osmMap.on(L.Draw.Event.CREATED, function(e) {
+        drawnItems.clearLayers();
+        drawnItems.addLayer(e.layer);
+        const bounds = e.layer.getBounds();
+        document.getElementById('geo-south').value = bounds.getSouth().toFixed(4);
+        document.getElementById('geo-north').value = bounds.getNorth().toFixed(4);
+        document.getElementById('geo-west').value = bounds.getWest().toFixed(4);
+        document.getElementById('geo-east').value = bounds.getEast().toFixed(4);
+        runGeoSearch();
+      });
+    }
+
+    function createShipIcon(color) {
+      return L.divIcon({
+        className: '',
+        html: '<div style="width:10px;height:10px;border-radius:50%;background:'+color+';border:1.5px solid rgba(0,0,0,.6);box-shadow:0 0 6px '+color+'88"></div>',
+        iconSize: [10, 10], iconAnchor: [5, 5]
+      });
+    }
+
+    function updateOSMMarkers(data) {
+      osmClusterGroup.clearLayers();
+      const markers = [];
+      data.forEach(track => {
+        const lat = parseFloat(track.latitude || 0);
+        const lng = parseFloat(track.longitude || 0);
+        if (lat === 0 && lng === 0) return;
+        const color = track.color || '#FFFFFF';
+        const speed = parseFloat(track.speed || 0).toFixed(1);
+        const course = parseFloat(track.course || 0).toFixed(1);
+        const suid = track.suid || '';
+        const escapedSuid = suid.replace(/'/g, "\\'");
+        const marker = L.marker([lat, lng], { icon: createShipIcon(color) });
+        marker.bindPopup(
+          '<div class="popup-name">'+(track.ship_name||'Unknown')+'</div>'+
+          '<div class="popup-row"><span class="popup-label">SUID</span><span class="popup-value" style="font-size:10px">'+(suid||'—')+'</span></div>'+
+          '<div class="popup-row"><span class="popup-label">Nationality</span><span class="popup-value">'+(track.nationality||'—')+'</span></div>'+
+          '<div class="popup-row"><span class="popup-label">Speed</span><span class="popup-value">'+speed+' kn</span></div>'+
+          '<div class="popup-row"><span class="popup-label">Course</span><span class="popup-value">'+course+'</span></div>'+
+          '<div class="popup-row"><span class="popup-label">Threat</span><span class="popup-value">'+(track.threat_score??'—')+'</span></div>'+
+          '<button class="popup-history-btn" onclick="viewShipHistory(\''+escapedSuid+'\')">&gt;&gt; View Track History</button>'+
+          '<div class="popup-action-row">'+
+            '<button class="popup-toi-btn" onclick="toggleTOI(\''+escapedSuid+'\')">&starf; Mark TOI</button>'+
+            '<button class="popup-remark-btn" onclick="openShipPanel(\''+escapedSuid+'\')">&plus; Remarks</button>'+
+          '</div>',
+          { className: 'ship-popup', maxWidth: 300 }
+        );
+        markers.push(marker);
+      });
+      osmClusterGroup.addLayers(markers);
+    }
+
+    // Called from popup button — opens history panel with this ship's SUID
+    function viewShipHistory(suid) {
+      osmMap.closePopup();
+      document.getElementById('ts-suid').value = suid;
+      document.getElementById('ts-from').value = '';
+      document.getElementById('ts-to').value = '';
+      openPanel('history');
+      runHistorySearch();
+    }
+
+    // ================================================================
+    //  TOI (Track of Interest) toggle
+    // ================================================================
+    async function toggleTOI(suid) {
+      const userId = getUserId();
+      try {
+        const res = await fetch(API_BASE+'/tracks/'+encodeURIComponent(suid)+'/toi', {
+          method: 'POST', headers: { 'x-user-id': userId }
+        });
+        const json = await res.json();
+        if (json.success) {
+          const action = json.action === 'added' ? 'MARKED as TOI' : 'REMOVED from TOI';
+          alert(action + ' for user: ' + userId);
+          // Refresh popup if ship panel is open
+          if (currentShipSuid === suid) openShipPanel(suid);
+          // Auto-refresh TOI list if the panel is currently open
+          if (document.getElementById('panel-toi').classList.contains('open')) {
+            loadToiList();
+          }
+        } else {
+          alert('Error: ' + (json.error || 'Unknown'));
+        }
+      } catch(e) { alert('Error: ' + e.message); }
+    }
+
+    // ================================================================
+    //  Ship Detail & Remarks Panel
+    // ================================================================
+    async function openShipPanel(suid) {
+      currentShipSuid = suid;
+      osmMap.closePopup();
+      openPanel('ship');
+
+      document.getElementById('ship-detail-info').innerHTML = '<div class="spinner" style="margin:10px auto"></div>';
+      document.getElementById('remarks-list').innerHTML = '<div class="spinner" style="margin:10px auto"></div>';
+
+      const userId = getUserId();
+
+      // Fetch ship detail
+      try {
+        const res = await fetch(API_BASE+'/tracks/'+encodeURIComponent(suid), { headers: { 'x-user-id': userId } });
+        const json = await res.json();
+        if (json.success) {
+          const d = json.data;
+          const isToi = d.IS_TOI === 1;
+          document.getElementById('ship-panel-title').textContent = d.ship_name || suid;
+          let html = '';
+          html += '<div class="popup-row"><span class="popup-label">SUID</span><span class="popup-value" style="font-size:10px">'+suid+'</span></div>';
+          html += '<div class="popup-row"><span class="popup-label">Nationality</span><span class="popup-value">'+(d.nationality||'-')+'</span></div>';
+          html += '<div class="popup-row"><span class="popup-label">MMSI</span><span class="popup-value">'+(d.mmsi_number||'-')+'</span></div>';
+          html += '<div class="popup-row"><span class="popup-label">Speed</span><span class="popup-value">'+parseFloat(d.speed||0).toFixed(1)+' kn</span></div>';
+          html += '<div class="popup-row"><span class="popup-label">Course</span><span class="popup-value">'+(d.course||'-')+'</span></div>';
+          html += '<div class="popup-row"><span class="popup-label">Threat Score</span><span class="popup-value">'+(d.threat_score??'-')+'</span></div>';
+          html += '<div class="popup-row"><span class="popup-label">TOI Status</span><span class="popup-value" style="color:'+(isToi?'#4caf50':'#888')+'">'+(isToi?'MARKED':'Not marked')+'</span></div>';
+          html += '<div style="margin-top:10px"><button class="popup-toi-btn '+(isToi?'is-toi':'')+'" style="width:100%;padding:8px" onclick="toggleTOI(\''+suid.replace(/'/g,"\\\'")+'\')">'
+            +(isToi?'Remove from Track of Interest':'Mark as Track of Interest')+'</button></div>';
+          document.getElementById('ship-detail-info').innerHTML = html;
+        }
+      } catch(e) {
+        document.getElementById('ship-detail-info').innerHTML = '<p style="color:#ff4444">Error loading ship</p>';
+      }
+
+      // Fetch remarks
+      loadRemarks(suid);
+    }
+
+    async function loadRemarks(suid) {
+      try {
+        const res = await fetch(API_BASE+'/tracks/'+encodeURIComponent(suid)+'/remarks');
+        const json = await res.json();
+        const remarks = json.data || [];
+        document.getElementById('remark-count-badge').textContent = '('+remarks.length+')';
+
+        if (remarks.length === 0) {
+          document.getElementById('remarks-list').innerHTML = '<p style="color:#555;font-size:12px">No remarks yet. Add one above.</p>';
+          return;
+        }
+
+        let html = '';
+        const userId = getUserId();
+        remarks.forEach(r => {
+          const time = r.created_at ? new Date(r.created_at).toLocaleString() : '-';
+          const canDelete = r.user_id === userId;
+          html += '<div class="remark-item">';
+          html += '<div class="remark-meta"><span>'+r.user_id+' &mdash; '+time+'</span>';
+          if (canDelete) html += '<button class="remark-delete" onclick="deleteRemark(\''+suid.replace(/'/g,"\\\'")+'\'  ,\''+r._id+'\')">&times; Delete</button>';
+          html += '</div>';
+          html += '<div class="remark-text">'+escapeHtml(r.text)+'</div>';
+          html += '</div>';
+        });
+        document.getElementById('remarks-list').innerHTML = html;
+      } catch(e) {
+        document.getElementById('remarks-list').innerHTML = '<p style="color:#ff4444">Error loading remarks</p>';
+      }
+    }
+
+    async function addRemark() {
+      if (!currentShipSuid) return;
+      const text = document.getElementById('remark-text').value.trim();
+      if (!text) { alert('Enter remark text'); return; }
+      const userId = getUserId();
+
+      try {
+        const res = await fetch(API_BASE+'/tracks/'+encodeURIComponent(currentShipSuid)+'/remarks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-user-id': userId },
+          body: JSON.stringify({ text })
+        });
+        const json = await res.json();
+        if (json.success) {
+          document.getElementById('remark-text').value = '';
+          loadRemarks(currentShipSuid);
+          // Also flag the user in CtrackRemarksUserIDs on the ship doc
+          await fetch(API_BASE+'/tracks/'+encodeURIComponent(currentShipSuid)+'/remark', {
+            method: 'POST', headers: { 'x-user-id': userId }
+          });
+        } else {
+          alert('Error: '+(json.error||'Failed'));
+        }
+      } catch(e) { alert('Error: '+e.message); }
+    }
+
+    async function deleteRemark(suid, remarkId) {
+      if (!confirm('Delete this remark?')) return;
+      const userId = getUserId();
+      try {
+        const res = await fetch(API_BASE+'/tracks/'+encodeURIComponent(suid)+'/remarks/'+remarkId, {
+          method: 'DELETE', headers: { 'x-user-id': userId }
+        });
+        const json = await res.json();
+        if (json.success) loadRemarks(suid);
+        else alert('Error: '+(json.error||'Failed'));
+      } catch(e) { alert('Error: '+e.message); }
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ================================================================
+    //  TOI List Panel
+    // ================================================================
+    async function loadToiList() {
+      const userId = getUserId();
+      const refreshBtn = document.getElementById('btn-refresh-toi');
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = 'Loading...';
+      document.getElementById('toi-list').innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+      try {
+        const res = await fetch(API_BASE+'/tracks/my-toi', { headers: { 'x-user-id': userId } });
+        if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText);
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error || 'Server error');
+        const ships = json.data || [];
+        document.getElementById('toi-count-badge').textContent = '('+ships.length+')';
+
+        if (ships.length === 0) {
+          document.getElementById('toi-list').innerHTML = '<div class="toi-empty">No ships marked as TOI yet.<br><br><span style="font-size:11px;color:#666">Click any ship on the map and press<br><b style="color:#ff9800">Mark TOI</b> to add it here.</span></div>';
+          refreshBtn.textContent = 'Refresh TOI List';
+          refreshBtn.disabled = false;
+          return;
+        }
+
+        let html = '';
+        ships.forEach(ship => {
+          const color = ship.color || '#fff';
+          const lat = parseFloat(ship.latitude || 0);
+          const lng = parseFloat(ship.longitude || 0);
+          const speed = parseFloat(ship.speed || 0).toFixed(1);
+          const suid = ship.suid || '';
+          const escapedSuid = suid.replace(/'/g, "\\'");
+          html += '<div class="toi-ship-card" onclick="flyToShip('+lat+','+lng+',\''+escapedSuid+'\')">'
+            + '<div class="toi-ship-dot" style="background:'+color+';box-shadow:0 0 6px '+color+'66"></div>'
+            + '<div class="toi-ship-info">'
+            +   '<div class="toi-ship-name">'+(ship.ship_name||'Unknown')+'</div>'
+            +   '<div class="toi-ship-meta">SUID: '+suid+'</div>'
+            +   '<div class="toi-ship-meta">Nat: '+(ship.nationality||'-')+' | Course: '+(ship.course||'-')+' | Threat: '+(ship.threat_score??'-')+'</div>'
+            + '</div>'
+            + '<div class="toi-ship-speed">'+speed+' kn</div>'
+            + '<div class="toi-ship-actions">'
+            +   '<button class="toi-remove-btn" onclick="event.stopPropagation();removeToi(\''+escapedSuid+'\')">Remove</button>'
+            + '</div>'
+            + '</div>';
+        });
+        document.getElementById('toi-list').innerHTML = html;
+        // Visual feedback on refresh button
+        refreshBtn.textContent = 'Refreshed (' + ships.length + ' ship' + (ships.length!==1?'s':'') + ')';
+        refreshBtn.style.background = 'linear-gradient(135deg,#4caf50,#2e7d32)';
+        setTimeout(() => { refreshBtn.textContent = 'Refresh TOI List'; refreshBtn.style.background = ''; }, 1500);
+      } catch(e) {
+        document.getElementById('toi-list').innerHTML = '<p style="color:#ff4444">Error loading TOI list:<br>'+e.message+'</p>';
+        refreshBtn.textContent = 'Retry';
+        refreshBtn.style.background = 'linear-gradient(135deg,#ff4444,#cc0000)';
+        setTimeout(() => { refreshBtn.textContent = 'Refresh TOI List'; refreshBtn.style.background = ''; }, 3000);
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    function flyToShip(lat, lng, suid) {
+      if (currentMode === 'osm' && osmMap) {
+        osmMap.flyTo([lat, lng], 12, { duration: 1.5 });
+        // Find and open the marker popup
+        setTimeout(() => {
+          osmClusterGroup.eachLayer(marker => {
+            if (marker.getPopup) {
+              const content = marker.getPopup()?.getContent() || '';
+              if (content.includes(suid)) {
+                marker.openPopup();
+              }
+            }
+          });
+        }, 1600);
+      }
+      // Close the panel so map is visible
+      closePanel('toi');
+    }
+
+    async function removeToi(suid) {
+      const userId = getUserId();
+      try {
+        await fetch(API_BASE+'/tracks/'+encodeURIComponent(suid)+'/toi', {
+          method: 'POST', headers: { 'x-user-id': userId }
+        });
+        loadToiList();
+      } catch(e) { alert('Error: '+e.message); }
+    }
+    // ================================================================
+    //  ArcGIS Map
+    // ================================================================
+    function initArcGIS() {
+      if (arcgisInitialized) return;
+      arcgisInitialized = true;
+      require(['esri/Map','esri/views/MapView','esri/layers/GeoJSONLayer','esri/widgets/Legend'],
+      function(Map, MapView, GeoJSONLayer, Legend) {
+        const shipLayer = new GeoJSONLayer({
+          url: API_BASE+'/feed/geojson?limit='+TRACK_LIMIT, title:'Ship Tracks', refreshInterval:0.5, outFields:['*'],
+          renderer: {
+            type:'unique-value', field:'nationality',
+            defaultSymbol:{type:'simple-marker',color:[255,255,255,200],size:6,outline:{color:[0,0,0],width:0.8}},
+            uniqueValueInfos: Object.entries(NATIONALITY_COLORS).map(([code,info])=>{
+              const h=info.color,r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16);
+              return {value:parseInt(code),label:info.name,symbol:{type:'simple-marker',color:[r,g,b,220],size:7,outline:{color:[0,0,0],width:0.8}}};
+            })
+          },
+          popupTemplate:{title:'{ship_name}',content:[{type:'fields',fieldInfos:[
+            {fieldName:'suid',label:'SUID'},{fieldName:'nationality',label:'Nationality'},
+            {fieldName:'speed',label:'Speed'},{fieldName:'course',label:'Course'},
+            {fieldName:'threat_score',label:'Threat'}
+          ]}]}
+        });
+        arcgisShipLayer = shipLayer;
+        const map = new Map({basemap:'dark-gray-vector',layers:[shipLayer]});
+        arcgisView = new MapView({container:'arcgis-map',map:map,center:[DEFAULT_CENTER[1],DEFAULT_CENTER[0]],zoom:DEFAULT_ZOOM,ui:{components:['attribution']}});
+        arcgisView.ui.add(new Legend({view:arcgisView,style:'card'}),'bottom-right');
+      });
+    }
+
+    // ================================================================
+    //  Data fetching
+    // ================================================================
+    async function fetchTracks() {
+      const btn = document.getElementById('refresh-btn');
+      btn.classList.add('spinning');
+      try {
+        const res = await fetch(API_BASE+'/feed/geojson?limit='+TRACK_LIMIT);
+        const geojson = await res.json();
+        trackData = geojson.features.map(f => f.properties);
+        document.getElementById('stat-tracks').textContent = trackData.length.toLocaleString();
+        document.getElementById('stat-time').textContent = (geojson.metadata?.query_time_ms||'—')+' ms';
+        document.getElementById('stat-refresh').textContent = new Date().toLocaleTimeString();
+        document.getElementById('track-count').textContent = trackData.length.toLocaleString()+' tracks';
+        updateOSMMarkers(trackData);
+        if (arcgisShipLayer) arcgisShipLayer.refresh();
+        hideLoading();
+      } catch(err) {
+        console.error('[Fetch] Error:', err);
+        document.getElementById('track-count').textContent = 'Error loading';
+        hideLoading();
+      } finally { btn.classList.remove('spinning'); }
+    }
+
+    // ================================================================
+    //  GeoWithin Search
+    // ================================================================
+    function startDrawing() {
+      osmMap.addControl(drawControl);
+      new L.Draw.Rectangle(osmMap, drawControl.options.draw.rectangle).enable();
+      document.getElementById('btn-draw-rect').classList.add('active');
+      document.getElementById('btn-draw-rect').textContent = 'Drawing...';
+      osmMap.once(L.Draw.Event.CREATED, function() {
+        try { osmMap.removeControl(drawControl); } catch(_) {}
+        document.getElementById('btn-draw-rect').classList.remove('active');
+        document.getElementById('btn-draw-rect').textContent = 'GeoWithin Search';
+      });
+    }
+
+    async function runGeoSearch() {
+      const s = parseFloat(document.getElementById('geo-south').value);
+      const n = parseFloat(document.getElementById('geo-north').value);
+      const w = parseFloat(document.getElementById('geo-west').value);
+      const e = parseFloat(document.getElementById('geo-east').value);
+      if ([s,n,w,e].some(isNaN)) { alert('Enter valid coordinates'); return; }
+
+      const polygon = { type:'Polygon', coordinates:[[[w,s],[e,s],[e,n],[w,n],[w,s]]] };
+      document.getElementById('geo-results').innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+      // Draw rectangle on map
+      drawnItems.clearLayers();
+      const rect = L.rectangle([[s,w],[n,e]], {color:'#00d4ff',weight:2,fillOpacity:0.1});
+      drawnItems.addLayer(rect);
+
+      try {
+        const res = await fetch(API_BASE+'/tracks/overlay', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({polygon})
+        });
+        const json = await res.json();
+        const data = json.data || [];
+
+        // Show results on map
+        geoResultLayer.clearLayers();
+        data.forEach(d => {
+          const lat = parseFloat(d.latitude||0), lng = parseFloat(d.longitude||0);
+          if (!lat && !lng) return;
+          const m = L.circleMarker([lat,lng], {radius:5,color:'#ff0',fillColor:'#ff0',fillOpacity:0.8,weight:1});
+          m.bindPopup('<b>'+(d.ship_name||'Unknown')+'</b><br>SUID: '+(d.suid||'—')+'<br>Speed: '+parseFloat(d.speed||0).toFixed(1)+' kn');
+          geoResultLayer.addLayer(m);
+        });
+
+        document.getElementById('btn-clear-geo').style.display = 'inline-block';
+
+        // Result table
+        let html = '<div class="result-count">Found '+data.length.toLocaleString()+' ships ('+json.query_time_ms+'ms)</div>';
+        html += '<table class="result-table"><thead><tr><th>Ship Name</th><th>SUID</th><th>Speed</th><th>Nat</th></tr></thead><tbody>';
+        data.slice(0,200).forEach(d => {
+          html += '<tr><td>'+(d.ship_name||'—')+'</td><td style="font-size:10px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(d.suid||'')+'">'+(d.suid||'—')+'</td><td>'+parseFloat(d.speed||0).toFixed(1)+'</td><td>'+(d.nationality||'—')+'</td></tr>';
+        });
+        if (data.length > 200) html += '<tr><td colspan="4" style="color:#888">...and '+(data.length-200)+' more</td></tr>';
+        html += '</tbody></table>';
+        document.getElementById('geo-results').innerHTML = html;
+
+        osmMap.fitBounds(rect.getBounds(), {padding:[50,50]});
+      } catch(err) {
+        document.getElementById('geo-results').innerHTML = '<p style="color:#ff4444">Error: '+err.message+'</p>';
+      }
+    }
+
+    function clearGeoResults() {
+      geoResultLayer.clearLayers();
+      drawnItems.clearLayers();
+      document.getElementById('geo-results').innerHTML = '';
+      document.getElementById('btn-clear-geo').style.display = 'none';
+    }
+    // ================================================================
+    //  Timeseries History Search (server-side pagination)
+    // ================================================================
+    async function runHistorySearch() {
+      const suid = document.getElementById('ts-suid').value.trim();
+      if (!suid) { alert('Enter a SUID'); return; }
+      const from = document.getElementById('ts-from').value;
+      const to = document.getElementById('ts-to').value;
+      const limit = document.getElementById('ts-limit').value || 5000;
+
+      // Save search context for page navigation
+      historySuid = suid;
+      historyTimeFrom = from;
+      historyTimeTo = to;
+      historyPage = 1;
+
+      document.getElementById('history-results').innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+      try {
+        // 1) Fetch trail coordinates for the map polyline (all points, minimal payload)
+        let trailUrl = API_BASE+'/tracks/'+encodeURIComponent(suid)+'/history?trail=1&limit='+limit;
+        if (from) trailUrl += '&time_from='+new Date(from).toISOString();
+        if (to) trailUrl += '&time_to='+new Date(to).toISOString();
+
+        // 2) Fetch first page for the table
+        let pageUrl = API_BASE+'/tracks/'+encodeURIComponent(suid)+'/history?page=1&page_size='+PAGE_SIZE;
+        if (from) pageUrl += '&time_from='+new Date(from).toISOString();
+        if (to) pageUrl += '&time_to='+new Date(to).toISOString();
+
+        const [trailRes, pageRes] = await Promise.all([fetch(trailUrl), fetch(pageUrl)]);
+        const trailJson = await trailRes.json();
+        const pageJson = await pageRes.json();
+
+        const trailData = trailJson.data || [];
+        historyPageData = pageJson.data || [];
+        historyTotalCount = pageJson.total_count || 0;
+        historyTotalPages = pageJson.total_pages || 1;
+        historyQueryMs = pageJson.query_time_ms || 0;
+        historyShipName = trailData.length > 0 ? (trailData[0].ship_name || suid) : suid;
+
+        // Draw FULL trail on map (all points from trail endpoint)
+        drawFullTrail(trailData, suid);
+
+        // Render first page table
+        renderHistoryPage();
+
+        document.getElementById('btn-clear-history').style.display = historyTotalCount > 0 ? 'block' : 'none';
+      } catch(err) {
+        document.getElementById('history-results').innerHTML = '<p style="color:#ff4444">Error: '+err.message+'</p>';
+      }
+    }
+
+    // Fetch a single page from the server (called by Prev/Next)
+    async function fetchHistoryPage(page) {
+      let url = API_BASE+'/tracks/'+encodeURIComponent(historySuid)+'/history?page='+page+'&page_size='+PAGE_SIZE;
+      if (historyTimeFrom) url += '&time_from='+new Date(historyTimeFrom).toISOString();
+      if (historyTimeTo) url += '&time_to='+new Date(historyTimeTo).toISOString();
+
+      try {
+        const res = await fetch(url);
+        const json = await res.json();
+        historyPage = json.page || page;
+        historyPageData = json.data || [];
+        historyTotalCount = json.total_count || historyTotalCount;
+        historyTotalPages = json.total_pages || historyTotalPages;
+        historyQueryMs = json.query_time_ms || 0;
+        renderHistoryPage();
+      } catch(err) {
+        document.getElementById('history-results').innerHTML = '<p style="color:#ff4444">Error: '+err.message+'</p>';
+      }
+    }
+
+    function drawFullTrail(data, suid) {
+      historyTrailLayer.clearLayers();
+      historyMarkerLayer.clearLayers();
+      if (data.length === 0) return;
+
+      const coords = data.filter(d => d.latitude && d.longitude).map(d => [d.latitude, d.longitude]);
+      if (coords.length > 1) {
+        const trail = L.polyline(coords, {color:'#00d4ff',weight:3,opacity:0.8,dashArray:'8,6'});
+        historyTrailLayer.addLayer(trail);
+        osmMap.fitBounds(trail.getBounds(), {padding:[60,60]});
+      }
+
+      // Markers for each point
+      data.forEach((d,i) => {
+        if (!d.latitude || !d.longitude) return;
+        const isFirst = i === 0;
+        const isLast = i === data.length - 1;
+        const m = L.circleMarker([d.latitude, d.longitude], {
+          radius: isFirst ? 7 : isLast ? 6 : 3,
+          color: isFirst ? '#ff4444' : isLast ? '#4caf50' : '#00d4ff',
+          fillColor: isFirst ? '#ff4444' : isLast ? '#4caf50' : '#00d4ff',
+          fillOpacity: isFirst ? 1 : isLast ? 1 : 0.5,
+          weight: isFirst || isLast ? 2 : 1
+        });
+        const label = isFirst ? ' (NEWEST)' : isLast ? ' (OLDEST)' : '';
+        const time = d.reported_time_info ? new Date(d.reported_time_info).toLocaleString() : '—';
+        m.bindPopup('<b>'+(d.ship_name||suid)+label+'</b><br>#'+(i+1)+' of '+data.length+'<br>Time: '+time+'<br>Speed: '+parseFloat(d.speed||0).toFixed(2)+' kn<br>Course: '+(d.course||'—')+'<br>Lat: '+parseFloat(d.latitude).toFixed(5)+'<br>Lng: '+parseFloat(d.longitude).toFixed(5));
+        historyMarkerLayer.addLayer(m);
+      });
+    }
+
+    function renderHistoryPage() {
+      const data = historyPageData;
+      const totalPages = historyTotalPages;
+      const startIdx = (historyPage - 1) * PAGE_SIZE;
+      const endIdx = startIdx + data.length;
+
+      let html = '<div class="result-count">'+historyShipName+' — '+historyTotalCount.toLocaleString()+' total entries';
+      if (historyQueryMs) html += ' ('+historyQueryMs+'ms)';
+      html += '</div>';
+
+      // Pagination controls top
+      html += '<div class="page-controls">';
+      html += '<button class="tool-btn secondary" onclick="historyPrevPage()" '+(historyPage<=1?'disabled style="opacity:.4;cursor:default"':'')+'>Prev</button>';
+      html += '<span class="page-info">Page '+historyPage+' / '+totalPages+' &nbsp;('+(startIdx+1)+'-'+endIdx+' of '+historyTotalCount+')</span>';
+      html += '<button class="tool-btn secondary" onclick="historyNextPage()" '+(historyPage>=totalPages?'disabled style="opacity:.4;cursor:default"':'')+'>Next</button>';
+      html += '</div>';
+
+      // Table
+      html += '<table class="result-table"><thead><tr><th>#</th><th>Time</th><th>Lat</th><th>Lng</th><th>Spd</th><th>Crs</th></tr></thead><tbody>';
+      data.forEach((d,i) => {
+        const globalIdx = startIdx + i + 1;
+        const time = d.reported_time_info ? new Date(d.reported_time_info).toLocaleString() : '—';
+        const isHighlighted = globalIdx === 1;
+        const rowStyle = isHighlighted ? 'background:rgba(255,68,68,.1)' : '';
+        html += '<tr style="'+rowStyle+';cursor:pointer" onclick="panToHistoryPoint('+i+')">';
+        html += '<td>'+globalIdx+'</td>';
+        html += '<td style="font-size:10px">'+time+'</td>';
+        html += '<td>'+parseFloat(d.latitude||0).toFixed(4)+'</td>';
+        html += '<td>'+parseFloat(d.longitude||0).toFixed(4)+'</td>';
+        html += '<td>'+parseFloat(d.speed||0).toFixed(1)+'</td>';
+        html += '<td>'+(typeof d.course==='number'?d.course:'—')+'</td>';
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+
+      // Pagination controls bottom
+      html += '<div class="page-controls" style="margin-top:8px">';
+      html += '<button class="tool-btn secondary" onclick="historyPrevPage()" '+(historyPage<=1?'disabled style="opacity:.4;cursor:default"':'')+'>Prev</button>';
+      html += '<span class="page-info">Page '+historyPage+' / '+totalPages+'</span>';
+      html += '<button class="tool-btn secondary" onclick="historyNextPage()" '+(historyPage>=totalPages?'disabled style="opacity:.4;cursor:default"':'')+'>Next</button>';
+      html += '</div>';
+
+      if (historyTotalCount === 0) html += '<p style="color:#888;margin-top:10px">No history found. Ship may not have been updated by the ingestion simulator yet.</p>';
+
+      document.getElementById('history-results').innerHTML = html;
+    }
+
+    function historyNextPage() {
+      if (historyPage < historyTotalPages) { fetchHistoryPage(historyPage + 1); }
+    }
+    function historyPrevPage() {
+      if (historyPage > 1) { fetchHistoryPage(historyPage - 1); }
+    }
+
+    // Click a row in the table to pan the map to that point
+    function panToHistoryPoint(localIdx) {
+      const d = historyPageData[localIdx];
+      if (d && d.latitude && d.longitude) {
+        osmMap.setView([d.latitude, d.longitude], Math.max(osmMap.getZoom(), 10));
+      }
+    }
+
+    function clearHistoryTrail() {
+      historyTrailLayer.clearLayers();
+      historyMarkerLayer.clearLayers();
+      historyPageData = [];
+      historyTotalCount = 0;
+      historyTotalPages = 1;
+      historyPage = 1;
+      historySuid = '';
+      document.getElementById('history-results').innerHTML = '';
+      document.getElementById('btn-clear-history').style.display = 'none';
+    }
+
+    // ================================================================
+    //  Performance Dashboard
+    // ================================================================
+    async function fetchPerformance() {
+      try {
+        const res = await fetch(API_BASE+'/api/performance');
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error||'Failed');
+        renderPerformance(json);
+      } catch(err) {
+        document.getElementById('perf-content').innerHTML = '<p style="color:#ff4444">Error: '+err.message+'</p>';
+      }
+    }
+
+    function renderPerformance(data) {
+      const c = data.collections;
+      const ing = data.ingestion;
+      const bm = data.benchmarks;
+      const ratePercent = Math.min(100, (ing.current_rate_per_sec / ing.target_rate_per_sec) * 100);
+      const rateClass = ratePercent > 60 ? 'good' : ratePercent > 20 ? 'warn' : (ing.current_rate_per_sec === 0 ? '' : 'danger');
+      const rateColor = ratePercent > 60 ? '#4caf50' : ratePercent > 20 ? '#ff9800' : '#ff4444';
+
+      let html = '';
+
+      // Ingestion rate
+      html += '<h4 style="color:#00d4ff;margin-bottom:8px;font-size:13px">Ingestion Rate</h4>';
+      html += '<div class="perf-grid">';
+      html += '<div class="perf-card wide '+(ing.current_rate_per_sec > 0 ? rateClass : '')+'">';
+      html += '<div class="perf-val">'+ing.current_rate_per_sec.toLocaleString()+' ops/sec</div>';
+      html += '<div class="perf-label">Current rate (target: '+ing.target_rate_per_sec.toLocaleString()+')</div>';
+      html += '<div class="rate-bar-bg"><div class="rate-bar-fill" style="width:'+ratePercent+'%;background:'+rateColor+'">'+Math.round(ratePercent)+'%</div></div>';
+      html += '</div></div>';
+
+      // Collection stats
+      html += '<h4 style="color:#00d4ff;margin:12px 0 8px;font-size:13px">Collection Stats</h4>';
+      html += '<div class="perf-grid">';
+      // ctrack_data
+      html += '<div class="perf-card"><div class="perf-val">'+c.ctrack_data.documents.toLocaleString()+'</div><div class="perf-label">ctrack_data docs</div></div>';
+      html += '<div class="perf-card"><div class="perf-val">'+c.tracks_local_timeseries.documents.toLocaleString()+'</div><div class="perf-label">timeseries docs</div></div>';
+      html += '<div class="perf-card"><div class="perf-val">'+c.ctrack_data.data_size_mb+' MB</div><div class="perf-label">ctrack_data size</div></div>';
+      html += '<div class="perf-card"><div class="perf-val">'+c.tracks_local_timeseries.data_size_mb+' MB</div><div class="perf-label">timeseries size</div></div>';
+      html += '<div class="perf-card"><div class="perf-val">'+c.ctrack_data.storage_size_mb+' MB</div><div class="perf-label">ctrack storage</div></div>';
+      html += '<div class="perf-card"><div class="perf-val">'+c.tracks_local_timeseries.storage_size_mb+' MB</div><div class="perf-label">ts storage</div></div>';
+      html += '<div class="perf-card"><div class="perf-val">'+c.ctrack_data.avg_doc_size_kb+' KB</div><div class="perf-label">avg doc size</div></div>';
+      html += '<div class="perf-card"><div class="perf-val">'+c.ctrack_data.index_count+'</div><div class="perf-label">indexes</div></div>';
+      html += '<div class="perf-card"><div class="perf-val">'+c.ctrack_data.index_size_mb+' MB</div><div class="perf-label">ctrack idx size</div></div>';
+      html += '<div class="perf-card"><div class="perf-val">'+c.tracks_local_timeseries.index_size_mb+' MB</div><div class="perf-label">ts idx size</div></div>';
+      html += '</div>';
+
+      // Query benchmarks
+      html += '<h4 style="color:#00d4ff;margin:12px 0 8px;font-size:13px">Query Benchmarks</h4>';
+      const maxMs = Math.max(...Object.values(bm), 1);
+      for (const [name, ms] of Object.entries(bm)) {
+        const pct = Math.max(5, (ms / maxMs) * 100);
+        const c2 = ms < 10 ? '#4caf50' : ms < 50 ? '#ff9800' : '#ff4444';
+        html += '<div class="bench-bar"><span class="bench-name">'+name.replace(/_/g,' ')+'</span><div class="bench-fill" style="width:'+pct+'%;background:'+c2+'">'+ms+'ms</div></div>';
+      }
+
+      // API response time
+      html += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08);color:#888;font-size:11px">';
+      html += 'Dashboard query: '+data.query_time_ms+'ms | '+new Date(data.timestamp).toLocaleTimeString();
+      html += '</div>';
+
+      document.getElementById('perf-content').innerHTML = html;
+    }
+
+    function startPerfPolling() {
+      fetchPerformance();
+      if (perfTimer) clearInterval(perfTimer);
+      perfTimer = setInterval(fetchPerformance, 3000);
+    }
+    function stopPerfPolling() {
+      if (perfTimer) { clearInterval(perfTimer); perfTimer = null; }
+    }
+
+    // ================================================================
+    //  Toggle logic
+    // ================================================================
+    function switchToOSM() {
+      currentMode = 'osm';
+      document.getElementById('osm-map').style.display = 'block';
+      document.getElementById('arcgis-map').style.display = 'none';
+      document.getElementById('stat-map').textContent = 'OpenStreetMap';
+      document.getElementById('lbl-osm').classList.add('active');
+      document.getElementById('lbl-arcgis').classList.remove('active');
+      setTimeout(() => osmMap.invalidateSize(), 100);
+    }
+    function switchToArcGIS() {
+      currentMode = 'arcgis';
+      document.getElementById('osm-map').style.display = 'none';
+      document.getElementById('arcgis-map').style.display = 'block';
+      document.getElementById('stat-map').textContent = 'Esri ArcGIS';
+      document.getElementById('lbl-osm').classList.remove('active');
+      document.getElementById('lbl-arcgis').classList.add('active');
+      if (!arcgisInitialized) initArcGIS();
+      else if (arcgisView) setTimeout(() => arcgisView.resize(), 100);
+    }
+
+    // ================================================================
+    //  Helpers
+    // ================================================================
+    function hideLoading() { const el = document.getElementById('loading'); if (el) el.style.display = 'none'; }
+    function startAutoRefresh() { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = setInterval(fetchTracks, AUTO_REFRESH_MS); }
+
+    // ================================================================
+    //  Init
+    // ================================================================
+    document.addEventListener('DOMContentLoaded', () => {
+      buildLegend();
+      initOSM();
+
+      // Toggle
+      document.getElementById('map-toggle').addEventListener('change', e => e.target.checked ? switchToArcGIS() : switchToOSM());
+
+      // Toolbar buttons
+      document.getElementById('btn-draw-rect').addEventListener('click', () => { openPanel('geo'); if (currentMode==='osm') startDrawing(); });
+      document.getElementById('btn-history').addEventListener('click', () => openPanel('history'));
+      document.getElementById('btn-toi-list').addEventListener('click', () => openPanel('toi'));
+      document.getElementById('btn-perf').addEventListener('click', () => openPanel('perf'));
+      document.getElementById('btn-benchmark').addEventListener('click', () => { openPanel('bench'); checkBenchStatus(); });
+      document.getElementById('btn-run-bench').addEventListener('click', startBenchmark);
+      document.getElementById('btn-cancel-bench').addEventListener('click', cancelBenchmark);
+      document.getElementById('btn-refresh-toi').addEventListener('click', loadToiList);
+      document.getElementById('btn-clear-geo').addEventListener('click', clearGeoResults);
+
+      // Panel buttons
+      document.getElementById('btn-start-draw').addEventListener('click', () => { if (currentMode==='osm') startDrawing(); });
+      document.getElementById('btn-run-geo').addEventListener('click', runGeoSearch);
+      document.getElementById('btn-run-history').addEventListener('click', runHistorySearch);
+      document.getElementById('btn-clear-history').addEventListener('click', clearHistoryTrail);
+      document.getElementById('btn-add-remark').addEventListener('click', addRemark);
+
+      // Refresh
+      document.getElementById('refresh-btn').addEventListener('click', fetchTracks);
+
+      // Initial load
+      fetchTracks();
+      startAutoRefresh();
+      startQueryLogPolling();
+    });
+
+    // ================================================================
+    //  Query Log Drawer
+    // ================================================================
+    function toggleQueryDrawer() {
+      document.getElementById('query-drawer').classList.toggle('expanded');
+    }
+
+    async function fetchQueryLog() {
+      try {
+        const res = await fetch(API_BASE+'/api/query-log?since='+qlLastId);
+        const json = await res.json();
+        if (!json.success) return;
+        const entries = json.data || [];
+        if (entries.length === 0) return;
+        qlLastId = json.last_id;
+        qlTotal += entries.length;
+        document.getElementById('ql-badge').textContent = qlTotal;
+
+        const tbody = document.getElementById('ql-tbody');
+        entries.forEach(e => {
+          // Summary row
+          const tr = document.createElement('tr');
+          tr.className = 'ql-row';
+          const t = new Date(e.timestamp);
+          const timeStr = t.toLocaleTimeString()+'.'+String(t.getMilliseconds()).padStart(3,'0');
+          const durClass = e.duration_ms < 10 ? 'fast' : e.duration_ms < 50 ? 'medium' : 'slow';
+          const qStr = typeof e.query === 'object' ? JSON.stringify(e.query) : String(e.query);
+          const method = (e.method||'GET').toUpperCase();
+          tr.innerHTML = 
+            '<td><span class="ql-expand-arrow">&#9654;</span></td>'+
+            '<td class="ql-id">'+e.id+'</td>'+
+            '<td class="ql-time">'+timeStr+'</td>'+
+            '<td class="ql-method '+method+'">'+method+'</td>'+
+            '<td class="ql-endpoint" title="'+e.endpoint+'">'+e.endpoint+'</td>'+
+            '<td class="ql-coll">'+e.collection+'</td>'+
+            '<td class="ql-op">'+e.operation+'</td>'+
+            '<td class="ql-query" title="'+qStr.replace(/"/g,'&quot;')+'">'+qStr+'</td>'+
+            '<td class="ql-dur '+durClass+'">'+e.duration_ms+'ms</td>'+
+            '<td class="ql-count">'+(e.result_count != null ? e.result_count.toLocaleString() : '-')+'</td>'+
+            '<td class="ql-idx" title="'+(e.index_used||'')+'">'+( e.index_used||'<span style="color:#555">-</span>')+'</td>';
+
+          // Detail row (hidden by default)
+          const detailTr = document.createElement('tr');
+          detailTr.className = 'ql-detail-row';
+          detailTr.innerHTML = '<td colspan="11">'+buildQueryDetail(e)+'</td>';
+
+          // Click to toggle
+          tr.addEventListener('click', () => {
+            const isOpen = detailTr.classList.contains('open');
+            // Close any other open detail
+            tbody.querySelectorAll('tr.ql-detail-row.open').forEach(r => r.classList.remove('open'));
+            tbody.querySelectorAll('tr.ql-row.selected').forEach(r => r.classList.remove('selected'));
+            if (!isOpen) {
+              detailTr.classList.add('open');
+              tr.classList.add('selected');
+            }
+          });
+
+          tbody.insertBefore(detailTr, tbody.firstChild);
+          tbody.insertBefore(tr, tbody.firstChild);
+        });
+
+        // Keep max 400 elements (200 row pairs)
+        while (tbody.children.length > 400) {
+          tbody.removeChild(tbody.lastChild);
+          tbody.removeChild(tbody.lastChild);
+        }
+      } catch(_) {}
+    }
+
+    function buildQueryDetail(e) {
+      const fmtJson = (obj) => {
+        if (obj == null) return '<span class="ql-null">null</span>';
+        if (typeof obj === 'string') return '<span class="ql-str">"'+escapeHtml(obj)+'"</span>';
+        const raw = JSON.stringify(obj, null, 2);
+        // Syntax highlight keys, strings, numbers
+        return escapeHtml(raw)
+          .replace(/&quot;([^&]+)&quot;\s*:/g, '<span class="ql-key">"$1"</span>:')
+          .replace(/:\s*&quot;([^&]*)&quot;/g, ': <span class="ql-str">"$1"</span>')
+          .replace(/:\s*(-?\d+\.?\d*)/g, ': <span class="ql-num">$1</span>')
+          .replace(/:\s*null/g, ': <span class="ql-null">null</span>');
+      };
+
+      const ts = new Date(e.timestamp);
+      const fullTime = ts.toLocaleString()+'.'+String(ts.getMilliseconds()).padStart(3,'0');
+      const durBar = Math.min(100, Math.max(2, e.duration_ms / 2));
+      const durColor = e.duration_ms < 10 ? '#4caf50' : e.duration_ms < 50 ? '#ff9800' : '#ff4444';
+
+      let html = '<div class="ql-detail"><div class="ql-detail-grid">';
+
+      // Row 1: ID + Timestamp + Method + Endpoint
+      html += '<div class="ql-detail-item"><span class="ql-detail-label">Query #</span><span class="ql-detail-value">'+e.id+'</span></div>';
+      html += '<div class="ql-detail-item"><span class="ql-detail-label">Timestamp</span><span class="ql-detail-value">'+fullTime+'</span></div>';
+      html += '<div class="ql-detail-item"><span class="ql-detail-label">Method</span><span class="ql-detail-value" style="color:'+(e.method==='POST'?'#ff9800':'#4caf50')+';font-weight:700">'+(e.method||'GET')+'</span></div>';
+      html += '<div class="ql-detail-item"><span class="ql-detail-label">Endpoint</span><span class="ql-detail-value" style="color:#fff">'+escapeHtml(e.endpoint)+'</span></div>';
+
+      // Row 2: Collection + Operation
+      html += '<div class="ql-detail-item"><span class="ql-detail-label">Collection</span><span class="ql-detail-value" style="color:#9370db;font-weight:600">'+escapeHtml(e.collection)+'</span></div>';
+      html += '<div class="ql-detail-item"><span class="ql-detail-label">Operation</span><span class="ql-detail-value" style="color:#00d4ff;font-weight:600">'+escapeHtml(e.operation)+'</span></div>';
+
+      // Row 3: Duration + Results
+      html += '<div class="ql-detail-item"><span class="ql-detail-label">Duration</span><span class="ql-detail-value"><span style="color:'+durColor+';font-weight:700;font-size:14px">'+e.duration_ms+'ms</span>';
+      html += '<div style="height:6px;background:rgba(255,255,255,.06);border-radius:3px;margin-top:3px;overflow:hidden"><div style="width:'+durBar+'%;height:100%;background:'+durColor+';border-radius:3px"></div></div>';
+      html += '</span></div>';
+      html += '<div class="ql-detail-item"><span class="ql-detail-label">Result Count</span><span class="ql-detail-value" style="font-size:14px;font-weight:700;color:#fff">'+(e.result_count != null ? e.result_count.toLocaleString() : '-')+' documents</span></div>';
+
+      // Row 4: Index Used
+      html += '<div class="ql-detail-item full"><span class="ql-detail-label">Index Used</span><span class="ql-detail-value" style="color:#DAA520;font-weight:600">'+(e.index_used ? escapeHtml(e.index_used) : '<span style="color:#555">None / Collection Scan</span>')+'</span></div>';
+
+      // Row 5: Query/Filter (full JSON)
+      html += '<div class="ql-detail-item full"><span class="ql-detail-label">Query / Filter</span><div class="ql-detail-value json">'+fmtJson(e.query)+'</div></div>';
+
+      // Row 6: Sort (if present)
+      if (e.sort) {
+        html += '<div class="ql-detail-item"><span class="ql-detail-label">Sort</span><div class="ql-detail-value json">'+fmtJson(e.sort)+'</div></div>';
+      }
+
+      // Row 7: Limit + Skip
+      if (e.limit != null || e.skip != null) {
+        html += '<div class="ql-detail-item"><span class="ql-detail-label">Limit / Skip</span><span class="ql-detail-value">';
+        if (e.limit != null) html += 'limit: <span style="color:#ff9800;font-weight:700">'+e.limit+'</span>';
+        if (e.skip != null) html += ' &nbsp; skip: <span style="color:#ff9800;font-weight:700">'+e.skip+'</span>';
+        html += '</span></div>';
+      }
+
+      // Row 8: Projection (if present)
+      if (e.projection) {
+        html += '<div class="ql-detail-item full"><span class="ql-detail-label">Projection</span><div class="ql-detail-value json">'+fmtJson(e.projection)+'</div></div>';
+      }
+
+      // MongoDB Shell equivalent
+      let shellCmd = 'db.'+e.collection+'.';
+      if (e.operation.includes('find') || e.operation.includes('CACHE')) {
+        shellCmd += 'find('+JSON.stringify(e.query || {})+')';
+        if (e.sort) shellCmd += '.sort('+JSON.stringify(e.sort)+')';
+        if (e.limit) shellCmd += '.limit('+e.limit+')';
+        if (e.skip) shellCmd += '.skip('+e.skip+')';
+        if (e.projection && typeof e.projection === 'object') shellCmd += '.project('+JSON.stringify(e.projection)+')';
+      } else if (e.operation.includes('aggregate')) {
+        const stages = [];
+        if (e.query && Object.keys(e.query).length) stages.push('{$match:'+JSON.stringify(e.query)+'}');
+        if (e.sort) stages.push('{$sort:'+JSON.stringify(e.sort)+'}');
+        if (e.limit) stages.push('{$limit:'+e.limit+'}');
+        shellCmd += 'aggregate(['+stages.join(',')+'])';
+      } else if (e.operation.includes('insert')) {
+        shellCmd += 'insertOne('+JSON.stringify(e.query || {})+')';  
+      } else if (e.operation.includes('update')) {
+        shellCmd += 'updateOne('+JSON.stringify(e.query || {})+', ...)';
+      } else if (e.operation.includes('delete')) {
+        shellCmd += 'deleteOne('+JSON.stringify(e.query || {})+')';  
+      } else {
+        shellCmd += e.operation+'('+JSON.stringify(e.query || {})+')';
+      }
+
+      html += '<div class="ql-detail-item full" style="margin-top:4px"><span class="ql-detail-label">MongoDB Shell Equivalent</span><div class="ql-detail-value json" style="color:#00d4ff">'+escapeHtml(shellCmd)+'</div></div>';
+
+      html += '</div></div>';
+      return html;
+    }
+
+    // ================================================================
+    //  Benchmark Panel
+    // ================================================================
+    let benchPollTimer = null;
+
+    async function startBenchmark() {
+      const ops = document.getElementById('bench-ops').value;
+      const dur = document.getElementById('bench-duration').value;
+      const interval = document.getElementById('bench-interval').value;
+      document.getElementById('bench-report').innerHTML = '';
+      try {
+        const res = await fetch(API_BASE+'/api/benchmark/start', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ ops_per_sec: parseInt(ops), duration_sec: parseInt(dur), sample_interval: parseInt(interval) })
+        });
+        const json = await res.json();
+        if (!json.success) { alert(json.error || 'Failed'); return; }
+        document.getElementById('btn-run-bench').style.display = 'none';
+        document.getElementById('btn-cancel-bench').style.display = 'block';
+        document.getElementById('bench-progress').style.display = 'block';
+        benchPollTimer = setInterval(checkBenchStatus, 2000);
+      } catch(e) { alert('Error: '+e.message); }
+    }
+
+    async function cancelBenchmark() {
+      await fetch(API_BASE+'/api/benchmark/cancel', { method:'POST' });
+    }
+
+    async function checkBenchStatus() {
+      try {
+        const res = await fetch(API_BASE+'/api/benchmark/status');
+        const json = await res.json();
+        if (json.status === 'idle') {
+          document.getElementById('bench-progress').style.display = 'none';
+          document.getElementById('btn-run-bench').style.display = 'block';
+          document.getElementById('btn-cancel-bench').style.display = 'none';
+          return;
+        }
+        if (json.status === 'running') {
+          renderBenchProgress(json);
+        } else if (json.status === 'complete' || json.status === 'error' || json.status === 'cancelled') {
+          if (benchPollTimer) { clearInterval(benchPollTimer); benchPollTimer = null; }
+          document.getElementById('bench-progress').style.display = 'none';
+          document.getElementById('btn-run-bench').style.display = 'block';
+          document.getElementById('btn-cancel-bench').style.display = 'none';
+          if (json.report && !json.report.error) renderBenchReport(json.report);
+          else if (json.report?.error) document.getElementById('bench-report').innerHTML = '<p style="color:#ff4444">Error: '+json.report.error+'</p>';
+        }
+      } catch(_) {}
+    }
+
+    function renderBenchProgress(state) {
+      const p = state.progress;
+      const pct = p.total_sec > 0 ? Math.min(100, Math.round((p.elapsed_sec / p.total_sec) * 100)) : 0;
+      const phaseNames = { baseline:'Running baseline...', ingestion:'Ingestion running...', stopping:'Stopping ingestion...', final:'Final measurement...' };
+      document.getElementById('bench-progress').innerHTML = '<div class="bench-progress">' +
+        '<div class="phase">'+(phaseNames[p.phase]||p.phase)+'</div>' +
+        '<div class="bar-bg"><div class="bar-fill" style="width:'+pct+'%"></div></div>' +
+        '<div class="detail">'+pct+'% | '+p.elapsed_sec+'s / '+p.total_sec+'s | Samples: '+p.samples_done+'/'+p.total_samples+'</div>' +
+        '</div>';
+      document.getElementById('bench-progress').style.display = 'block';
+    }
+
+    function renderBenchReport(rpt) {
+      const dc = v => v < 10 ? 'fast' : v < 50 ? 'medium' : 'slow';
+      let h = '';
+
+      // Summary cards
+      h += '<div class="bench-report-section"><h4>Test Summary</h4>';
+      h += '<div class="perf-grid">';
+      h += '<div class="perf-card good"><div class="perf-val">'+rpt.config.ops_per_sec+'</div><div class="perf-label">Target ops/sec</div></div>';
+      h += '<div class="perf-card '+(rpt.avg_ingestion_rate>=rpt.config.ops_per_sec?'good':'warn')+'"><div class="perf-val">'+rpt.avg_ingestion_rate.toLocaleString()+'</div><div class="perf-label">Avg achieved ops/sec</div></div>';
+      h += '<div class="perf-card"><div class="perf-val">'+rpt.config.duration_sec+'s</div><div class="perf-label">Test duration</div></div>';
+      h += '<div class="perf-card good"><div class="perf-val">'+rpt.queries_under_50ms_pct+'%</div><div class="perf-label">Queries &lt; 50ms</div></div>';
+      h += '<div class="perf-card"><div class="perf-val">'+rpt.storage.post_ctrack.toLocaleString()+'</div><div class="perf-label">Ships (ctrack_data)</div></div>';
+      h += '<div class="perf-card"><div class="perf-val">'+rpt.storage.new_ts_entries.toLocaleString()+'</div><div class="perf-label">New TS entries</div></div>';
+      h += '</div></div>';
+
+      // Query table
+      h += '<div class="bench-report-section"><h4>Query Performance Under Load</h4>';
+      h += '<table class="bench-table"><thead><tr><th>Query Pattern</th><th>Avg</th><th>Min</th><th>Max</th><th>P95</th><th>Baseline</th><th>Post</th><th>Impact</th><th>Index</th></tr></thead><tbody>';
+      rpt.query_performance.forEach(q => {
+        const impact = q.baseline > 0 ? Math.round((q.avg / q.baseline - 1) * 100) : 0;
+        const impactStr = impact <= 0 ? impact+'%' : '+'+impact+'%';
+        const impactClass = impact <= 10 ? 'fast' : impact <= 50 ? 'medium' : 'slow';
+        h += '<tr><td>'+q.name+'</td>';
+        h += '<td class="num '+dc(q.avg)+'">'+q.avg+'ms</td>';
+        h += '<td class="num">'+q.min+'ms</td>';
+        h += '<td class="num">'+q.max+'ms</td>';
+        h += '<td class="num">'+q.p95+'ms</td>';
+        h += '<td class="num">'+q.baseline+'ms</td>';
+        h += '<td class="num">'+q.post+'ms</td>';
+        h += '<td class="num '+impactClass+'">'+impactStr+'</td>';
+        h += '<td style="color:#DAA520;font-size:10px">'+q.index+'</td></tr>';
+      });
+      h += '</tbody></table></div>';
+
+      // Throughput timeline
+      const maxRate = Math.max(...rpt.throughput_timeline.map(t=>t.rate), 1);
+      h += '<div class="bench-report-section"><h4>Ingestion Throughput</h4>';
+      rpt.throughput_timeline.forEach(t => {
+        const pct = Math.round((t.rate / maxRate) * 100);
+        h += '<div class="bench-rate-bar"><span class="lbl">'+t.elapsed_sec+'s</span><div class="bar" style="width:'+pct+'%"></div><span class="val">'+t.rate+' ops/s</span><span style="color:#555;font-size:9px">ts:'+t.ts_docs.toLocaleString()+'</span></div>';
+      });
+      h += '</div>';
+
+      // Save button
+      h += '<button class="bench-save-btn" onclick="saveBenchReport()">&#128190; Save Report</button>';
+
+      document.getElementById('bench-report').innerHTML = h;
+    }
+
+    function saveBenchReport() {
+      fetch(API_BASE+'/api/benchmark/status').then(r=>r.json()).then(json => {
+        if (!json.report) { alert('No report available'); return; }
+        const rpt = json.report;
+        // Build text report
+        let txt = '='.repeat(80) + '\n';
+        txt += '  SHIP TRACKING POC — MONGODB PERFORMANCE BENCHMARK REPORT\n';
+        txt += '='.repeat(80) + '\n\n';
+        txt += 'Generated: ' + (rpt.finished_at||new Date().toISOString()) + '\n';
+        txt += 'Test Start: ' + (rpt.started_at||'-') + '\n\n';
+        txt += 'CONFIGURATION\n';
+        txt += '  Target write rate:  ' + rpt.config.ops_per_sec + ' ops/sec\n';
+        txt += '  Test duration:      ' + rpt.config.duration_sec + ' seconds\n';
+        txt += '  Sample interval:    ' + rpt.config.sample_interval + ' seconds\n\n';
+        txt += 'RESULTS\n';
+        txt += '  Avg ingestion rate:     ' + rpt.avg_ingestion_rate + ' ops/sec\n';
+        txt += '  Peak ingestion rate:    ' + rpt.peak_ingestion_rate + ' ops/sec\n';
+        txt += '  Queries under 50ms:     ' + rpt.queries_under_50ms_pct + '%\n';
+        txt += '  Ships (ctrack_data):    ' + rpt.storage.post_ctrack.toLocaleString() + '\n';
+        txt += '  Timeseries before:      ' + rpt.storage.pre_ts.toLocaleString() + '\n';
+        txt += '  Timeseries after:       ' + rpt.storage.post_ts.toLocaleString() + '\n';
+        txt += '  New TS entries:         ' + rpt.storage.new_ts_entries.toLocaleString() + '\n\n';
+        txt += 'QUERY PERFORMANCE UNDER LOAD\n';
+        txt += '-'.repeat(80) + '\n';
+        txt += '  ' + 'Query'.padEnd(28) + 'Avg    Min    Max    P95    Base   Post   Impact  Index\n';
+        txt += '-'.repeat(80) + '\n';
+        rpt.query_performance.forEach(q => {
+          const impact = q.baseline > 0 ? Math.round((q.avg / q.baseline - 1) * 100) : 0;
+          txt += '  ' + q.name.padEnd(28) + String(q.avg+'ms').padStart(5) + String(q.min+'ms').padStart(7) + String(q.max+'ms').padStart(7) + String(q.p95+'ms').padStart(7) + String(q.baseline+'ms').padStart(7) + String(q.post+'ms').padStart(7) + String((impact<=0?impact:'+'+impact)+'%').padStart(8) + '  ' + q.index + '\n';
+        });
+        txt += '-'.repeat(80) + '\n\n';
+        txt += 'INGESTION THROUGHPUT TIMELINE\n';
+        rpt.throughput_timeline.forEach(t => {
+          const bar = '█'.repeat(Math.round((t.rate/Math.max(...rpt.throughput_timeline.map(x=>x.rate),1))*30));
+          txt += '  ' + String(t.elapsed_sec+'s').padStart(5) + ' │' + bar.padEnd(30) + '│ ' + String(t.rate).padStart(5) + ' ops/sec  (ts: ' + t.ts_docs.toLocaleString() + ')\n';
+        });
+        txt += '\n' + '='.repeat(80) + '\n';
+
+        // Also save JSON
+        const jsonStr = JSON.stringify(rpt, null, 2);
+
+        // Download text file
+        const blob = new Blob([txt + '\n\nRAW JSON:\n' + jsonStr], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'benchmark-report-' + new Date().toISOString().replace(/[:.]/g,'-').slice(0,19) + '.txt';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    function startQueryLogPolling() {
+      fetchQueryLog();
+      if (qlTimer) clearInterval(qlTimer);
+      qlTimer = setInterval(fetchQueryLog, 2000);
+    }
+  </script>
+</body>
+</html>

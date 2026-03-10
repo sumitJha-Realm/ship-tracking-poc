@@ -1,0 +1,18 @@
+{
+  "mongodb": {
+    "uri": "mongodb://localhost:35010/?directConnection=true",
+    "database": "ship_tracking",
+    "collection": "ctrack_data"
+  },
+  "feed": {
+    "maxRecordCount": 10000,
+    "defaultLimit": 5000,
+    "refreshIntervalSeconds": 5,
+    "spatialReference": 4326,
+    "geometryField": "trackLocation",
+    "objectIdField": "_oid",
+    "displayField": "ship_name",
+    "name": "CTRACK_Ship_Tracks",
+    "description": "Real-time maritime vessel tracking data from CTRACK system"
+  }
+}
