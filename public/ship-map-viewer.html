@@ -583,11 +583,13 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
         const json = await res.json();
         if (json.success) {
           const action = json.action === 'added' ? 'MARKED as TOI' : 'REMOVED from TOI';
+          // Capture TOI panel state BEFORE openShipPanel (which closes all panels)
+          const toiPanelWasOpen = document.getElementById('panel-toi').classList.contains('open');
           alert(action + ' for user: ' + userId);
           // Refresh popup if ship panel is open
           if (currentShipSuid === suid) openShipPanel(suid);
-          // Auto-refresh TOI list if the panel is currently open
-          if (document.getElementById('panel-toi').classList.contains('open')) {
+          // Auto-refresh TOI list if it was open (or still is)
+          if (toiPanelWasOpen || document.getElementById('panel-toi').classList.contains('open')) {
             loadToiList();
           }
         } else {
