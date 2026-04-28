@@ -47,6 +47,16 @@ app.use(express.static(path.join(__dirname, '../../public')));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Ensure DB is connected on every request (required for serverless/Vercel)
+app.use(async (req, res, next) => {
+  try {
+    await connect();
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Request logging middleware
 app.use((req, res, next) => {
   const start = Date.now();
@@ -1282,6 +1292,9 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-start();
+// Only start the HTTP server when run directly (not in Vercel serverless)
+if (require.main === module) {
+  start();
+}
 
 module.exports = app;
