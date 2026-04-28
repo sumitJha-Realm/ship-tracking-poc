@@ -4,12 +4,12 @@ require('dotenv').config();
 // ─── Connection ──────────────────────────────────────────────────────
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/?directConnection=true';
 
-// Database: ship_tracking  → latest CTRACK state per ship
+// Database: ship_tracking  → both ctrack_data and timeseries
 const DB_NAME = process.env.DB_NAME || 'ship_tracking';
 const COLLECTION_NAME = 'ctrack_data';
 
-// Database: CTRACK  → full historical timeseries
-const CTRACK_DB_NAME = 'CTRACK';
+// Timeseries collection lives in the same ship_tracking database
+const CTRACK_DB_NAME = DB_NAME;
 const TIMESERIES_COLLECTION = 'tracks_local_timeseries';
 
 const clientOptions = {
@@ -33,10 +33,10 @@ async function connect() {
     client = new MongoClient(MONGO_URI, clientOptions);
     await client.connect();
     db = client.db(DB_NAME);
-    ctrackDb = client.db(CTRACK_DB_NAME);
+    ctrackDb = db;  // same database
 
     await db.command({ ping: 1 });
-    console.log(`[DB] Connected to MongoDB: ${DB_NAME} + ${CTRACK_DB_NAME}`);
+    console.log(`[DB] Connected to MongoDB: ${DB_NAME}`);
 
     return { client, db };
   } catch (error) {
@@ -86,9 +86,9 @@ async function ensureTimeseriesCollection() {
         granularity: 'seconds',
       },
     });
-    console.log(`[DB] Created timeseries: ${CTRACK_DB_NAME}.${TIMESERIES_COLLECTION}`);
+    console.log(`[DB] Created timeseries: ${DB_NAME}.${TIMESERIES_COLLECTION}`);
   } else {
-    console.log(`[DB] Timeseries already exists: ${CTRACK_DB_NAME}.${TIMESERIES_COLLECTION}`);
+    console.log(`[DB] Timeseries already exists: ${DB_NAME}.${TIMESERIES_COLLECTION}`);
   }
 }
 
@@ -98,6 +98,7 @@ async function disconnect() {
     client = null;
     db = null;
     ctrackDb = null;
+    db = null;
     console.log('[DB] Disconnected from MongoDB');
   }
 }
