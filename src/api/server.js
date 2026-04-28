@@ -262,10 +262,10 @@ app.get('/tracks/overlay', async (req, res) => {
 });
 
 // ─── POST /tracks/overlay ────────────────────────────────────────────
-// Find ships within a GeoJSON polygon (POST with JSON body — easier for UI)
+// Find ships within a GeoJSON polygon — queries timeseries collection (CTRACK.tracks_local_timeseries)
 app.post('/tracks/overlay', async (req, res) => {
   try {
-    const collection = await getCollection();
+    const collection = await getTimeseriesCollection();
     const limit = Math.min(parseInt(req.query.limit) || 5000, 50000);
     const polygon = req.body.polygon;
 
@@ -294,8 +294,8 @@ app.post('/tracks/overlay', async (req, res) => {
       });
     });
 
-    logQuery({ endpoint: 'POST /tracks/overlay', method: 'POST', collection: 'ctrack_data', operation: 'aggregate($geoWithin)', query: { trackLocation: { $geoWithin: { $geometry: 'Polygon(...)' } } }, limit, duration_ms: duration, result_count: data.length, index_used: 'idx_trackLocation_2dsphere' });
-    logger.info('API', `POST /tracks/overlay - ${data.length} results in ${duration}ms`);
+    logQuery({ endpoint: 'POST /tracks/overlay', method: 'POST', collection: 'tracks_local_timeseries', operation: 'aggregate($geoWithin)', query: { trackLocation: { $geoWithin: { $geometry: 'Polygon(...)' } } }, limit, duration_ms: duration, result_count: data.length, index_used: 'idx_ts_trackLocation_2dsphere' });
+    logger.info('API', `POST /tracks/overlay (timeseries) - ${data.length} results in ${duration}ms`);
     res.json({ success: true, count: data.length, query_time_ms: duration, data });
   } catch (error) {
     logger.error('API', 'POST /tracks/overlay failed:', error.message);

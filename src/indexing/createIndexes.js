@@ -57,6 +57,11 @@ const TS_INDEXES = [
     options: { name: 'idx_ts_mmsi_time' },
     purpose: 'Ship history by MMSI',
   },
+  {
+    key: { trackLocation: '2dsphere' },
+    options: { name: 'idx_ts_trackLocation_2dsphere' },
+    purpose: 'Geospatial queries on historical positions',
+  },
 ];
 
 async function createIndexesForCollection(collection, indexes, label) {

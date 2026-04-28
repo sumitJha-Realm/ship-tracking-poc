@@ -2,7 +2,7 @@ const { MongoClient } = require('mongodb');
 require('dotenv').config();
 
 // ─── Connection ──────────────────────────────────────────────────────
-const MONGO_URI = 'mongodb://127.0.0.1:27017/?directConnection=true';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/?directConnection=true';
 
 // Database: ship_tracking  → latest CTRACK state per ship
 const DB_NAME = process.env.DB_NAME || 'ship_tracking';

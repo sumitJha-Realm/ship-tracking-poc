@@ -278,9 +278,8 @@ async function seedData() {
         const doc = generateCtrackDoc(ships[i], now);
         ctrackDocs.push(doc);
 
-        // Timeseries doc: same but without trackLocation (raw CTRACK)
+        // Timeseries doc: same as CTRACK, includes trackLocation for geospatial queries
         const tsDoc = { ...doc };
-        delete tsDoc.trackLocation;
         tsDocs.push(tsDoc);
       }
 
