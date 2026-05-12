@@ -201,6 +201,31 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
 .page-controls{display:flex;align-items:center;justify-content:space-between;margin:10px 0;gap:8px}
 .page-controls button{padding:6px 14px;font-size:11px}
 .page-info{color:#888;font-size:12px;white-space:nowrap}
+/* Analytics panel */
+.analytics-summary-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px}
+.analytics-card{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:8px;padding:10px;text-align:center}
+.analytics-card .a-val{font-size:20px;font-weight:700;color:#00d4ff;margin-bottom:2px}
+.analytics-card .a-label{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:.5px}
+.analytics-card.warn .a-val{color:#ff9800}
+.analytics-card.danger .a-val{color:#ff4444}
+.analytics-card.good .a-val{color:#4caf50}
+.analytics-card.wide{grid-column:1/-1}
+.analytics-ship-row{display:flex;align-items:center;gap:8px;padding:8px 10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:8px;margin-bottom:6px;cursor:pointer;transition:background .15s}
+.analytics-ship-row:hover{background:rgba(0,212,255,.06)}
+.analytics-ship-row .ship-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.analytics-ship-row .ship-info{flex:1;min-width:0}
+.analytics-ship-row .ship-nm{font-size:12px;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.analytics-ship-row .ship-meta{font-size:10px;color:#888}
+.analytics-ship-row .ship-stat{text-align:right;font-size:11px;font-weight:700;white-space:nowrap}
+.analytics-ship-row .ship-stat.fast{color:#ff4444}
+.analytics-ship-row .ship-stat.normal{color:#4caf50}
+.analytics-ship-row .ship-stat.erratic{color:#ff9800}
+.chart-area{position:relative;width:100%;height:140px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);border-radius:8px;margin-bottom:12px;overflow:hidden}
+.chart-area canvas{width:100%;height:100%}
+.analytics-tabs{display:flex;gap:4px;margin-bottom:12px}
+.analytics-tab{flex:1;padding:8px;text-align:center;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:6px;color:#888;font-size:11px;font-weight:600;cursor:pointer;transition:all .15s}
+.analytics-tab.active{background:rgba(0,212,255,.15);border-color:rgba(0,212,255,.3);color:#00d4ff}
+.anomaly-badge{display:inline-block;background:rgba(255,68,68,.2);color:#ff6666;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;margin-left:4px}
   </style>
 </head>
 <body>
@@ -228,6 +253,8 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
     <button class="tool-btn secondary" id="btn-toi-list" title="View all ships marked as Track of Interest" style="background:linear-gradient(135deg,#ff9800,#f57c00)">My TOI</button>
     <button class="tool-btn secondary" id="btn-perf" title="Live DB performance dashboard">Performance</button>
     <button class="tool-btn secondary" id="btn-benchmark" title="Run performance benchmark" style="background:linear-gradient(135deg,#e91e63,#c2185b)">Benchmark</button>
+    <button class="tool-btn secondary" id="btn-analytics" title="Timeseries window analytics" style="background:linear-gradient(135deg,#7c4dff,#651fff)">Analytics</button>
+    <button class="tool-btn secondary" id="btn-doccount" title="Count documents over time" style="background:linear-gradient(135deg,#00bfa5,#00897b)">Doc Count</button>
     <button class="tool-btn secondary" id="btn-clear-geo" title="Clear geo search results" style="display:none">Clear Geo</button>
   </div>
 
@@ -380,6 +407,69 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
     </div>
   </div>
 
+  <!-- Analytics Panel -->
+  <div class="side-panel" id="panel-analytics" style="width:520px">
+    <div class="panel-header">
+      <h3>Timeseries Window Analytics</h3>
+      <button class="panel-close" onclick="closePanel('analytics')">&times;</button>
+    </div>
+    <div class="panel-body">
+      <p style="color:#888;margin-bottom:12px;font-size:12px">MongoDB <code style="color:#7c4dff">$setWindowFields</code> analytics — rolling averages, acceleration, anomaly detection, and fleet-wide insights computed using timeseries window functions.</p>
+
+      <div class="analytics-tabs">
+        <div class="analytics-tab active" id="tab-fleet" onclick="switchAnalyticsTab('fleet')">Fleet Overview</div>
+        <div class="analytics-tab" id="tab-ship" onclick="switchAnalyticsTab('ship')">Ship Detail</div>
+      </div>
+
+      <!-- Fleet tab -->
+      <div id="analytics-fleet-tab">
+        <div class="form-group">
+          <label>Analyze Last (hours)</label>
+          <div style="display:flex;gap:8px">
+            <input type="number" id="analytics-hours" value="24" min="1" max="720" style="flex:1"/>
+            <button class="tool-btn" id="btn-run-fleet-analytics" style="white-space:nowrap">Analyze Fleet</button>
+          </div>
+        </div>
+        <div id="fleet-analytics-results"></div>
+      </div>
+
+      <!-- Ship tab -->
+      <div id="analytics-ship-tab" style="display:none">
+        <div class="form-group">
+          <label>SUID</label>
+          <input type="text" id="analytics-suid" placeholder="Click a ship on the map or enter SUID"/>
+        </div>
+        <div class="form-group">
+          <label>Window Size (rolling records)</label>
+          <input type="number" id="analytics-window" value="50" min="5" max="200"/>
+        </div>
+        <div class="form-group">
+          <label>Max Records</label>
+          <input type="number" id="analytics-limit" value="500" min="50" max="5000"/>
+        </div>
+        <button class="tool-btn" id="btn-run-ship-analytics" style="width:100%">Analyze Ship</button>
+        <div id="ship-analytics-results" style="margin-top:14px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Doc Count Panel -->
+  <div class="side-panel" id="panel-doccount" style="width:400px">
+    <div class="panel-header">
+      <h3>Document Count</h3>
+      <button class="panel-close" onclick="closePanel('doccount')">&times;</button>
+    </div>
+    <div class="panel-body">
+      <p style="color:#888;margin-bottom:14px;font-size:12px">Count timeseries documents over a specified number of days using <code style="color:#00bfa5">countDocuments()</code>.</p>
+      <div class="form-group">
+        <label>Days to look back</label>
+        <input type="number" id="doccount-days" value="7" min="1" max="365" />
+      </div>
+      <button class="tool-btn" id="btn-run-doccount" style="width:100%;background:linear-gradient(135deg,#00bfa5,#00897b)">Count Documents</button>
+      <div id="doccount-results" style="margin-top:16px"></div>
+    </div>
+  </div>
+
   <!-- Performance Panel -->
   <div class="side-panel" id="panel-perf">
     <div class="panel-header">
@@ -460,7 +550,7 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
     function getUserId() { return (document.getElementById('user-id-input').value || '').trim() || 'user_01'; }
 
     function openPanel(name) {
-      ['geo','history','perf','ship','toi','bench'].forEach(p => {
+      ['geo','history','perf','ship','toi','bench','analytics','doccount'].forEach(p => {
         document.getElementById('panel-'+p).classList.toggle('open', p === name);
       });
       if (name === 'perf') startPerfPolling();
@@ -1225,6 +1315,8 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
       document.getElementById('btn-toi-list').addEventListener('click', () => openPanel('toi'));
       document.getElementById('btn-perf').addEventListener('click', () => openPanel('perf'));
       document.getElementById('btn-benchmark').addEventListener('click', () => { openPanel('bench'); checkBenchStatus(); });
+      document.getElementById('btn-analytics').addEventListener('click', () => openPanel('analytics'));
+      document.getElementById('btn-doccount').addEventListener('click', () => openPanel('doccount'));
       document.getElementById('btn-run-bench').addEventListener('click', startBenchmark);
       document.getElementById('btn-cancel-bench').addEventListener('click', cancelBenchmark);
       document.getElementById('btn-refresh-toi').addEventListener('click', loadToiList);
@@ -1236,6 +1328,11 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
       document.getElementById('btn-run-history').addEventListener('click', runHistorySearch);
       document.getElementById('btn-clear-history').addEventListener('click', clearHistoryTrail);
       document.getElementById('btn-add-remark').addEventListener('click', addRemark);
+
+      // Analytics panel buttons
+      document.getElementById('btn-run-fleet-analytics').addEventListener('click', runFleetAnalytics);
+      document.getElementById('btn-run-ship-analytics').addEventListener('click', runShipAnalytics);
+      document.getElementById('btn-run-doccount').addEventListener('click', runDocCount);
 
       // Refresh
       document.getElementById('refresh-btn').addEventListener('click', fetchTracks);
@@ -1574,6 +1671,323 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
       fetchQueryLog();
       if (qlTimer) clearInterval(qlTimer);
       qlTimer = setInterval(fetchQueryLog, 2000);
+    }
+
+    // ================================================================
+    //  Doc Count
+    // ================================================================
+    async function runDocCount() {
+      const days = document.getElementById('doccount-days').value || 7;
+      const container = document.getElementById('doccount-results');
+      container.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+      try {
+        const res = await fetch(API_BASE + '/api/doc-count?days=' + days);
+        const json = await res.json();
+        if (!json.success) { container.innerHTML = '<p style="color:#ff4444">' + json.error + '</p>'; return; }
+
+        const since = new Date(json.since).toLocaleString();
+        let html = '<div class="analytics-summary-grid" style="grid-template-columns:1fr 1fr">';
+        html += '<div class="analytics-card" style="grid-column:1/-1"><div class="a-val" style="font-size:32px;color:#00bfa5">' + json.count.toLocaleString() + '</div><div class="a-label">Total Documents</div></div>';
+        html += '<div class="analytics-card"><div class="a-val" style="color:#00d4ff">' + json.query_time_ms + '<span style="font-size:12px">ms</span></div><div class="a-label">Query Time</div></div>';
+        html += '<div class="analytics-card"><div class="a-val">' + json.days + '<span style="font-size:12px">d</span></div><div class="a-label">Days Queried</div></div>';
+        html += '</div>';
+        html += '<div style="color:#666;font-size:11px;margin-top:10px;text-align:center">Since: ' + since + '</div>';
+
+        container.innerHTML = html;
+      } catch (e) {
+        container.innerHTML = '<p style="color:#ff4444">Error: ' + e.message + '</p>';
+      }
+    }
+
+    // ================================================================
+    //  Analytics — Window Functions
+    // ================================================================
+    function switchAnalyticsTab(tab) {
+      document.getElementById('tab-fleet').classList.toggle('active', tab === 'fleet');
+      document.getElementById('tab-ship').classList.toggle('active', tab === 'ship');
+      document.getElementById('analytics-fleet-tab').style.display = tab === 'fleet' ? 'block' : 'none';
+      document.getElementById('analytics-ship-tab').style.display = tab === 'ship' ? 'block' : 'none';
+    }
+
+    async function runFleetAnalytics() {
+      const hours = document.getElementById('analytics-hours').value || 24;
+      const container = document.getElementById('fleet-analytics-results');
+      container.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+      try {
+        const res = await fetch(API_BASE + '/api/analytics/fleet/summary?hours=' + hours);
+        const json = await res.json();
+        if (!json.success) { container.innerHTML = '<p style="color:#ff4444">' + json.error + '</p>'; return; }
+
+        const s = json.summary;
+        const ships = json.ships || [];
+        const natColors = {};
+        Object.entries(NATIONALITY_COLORS).forEach(([k, v]) => { natColors[parseInt(k)] = v.color; });
+
+        let html = '<div style="color:#888;font-size:11px;margin-bottom:10px">Query: <strong style="color:#7c4dff">' + json.query_time_ms + 'ms</strong> using <code style="color:#7c4dff">$setWindowFields</code></div>';
+
+        html += '<div class="analytics-summary-grid">';
+        html += '<div class="analytics-card"><div class="a-val">' + s.total_ships + '</div><div class="a-label">Ships</div></div>';
+        html += '<div class="analytics-card"><div class="a-val">' + s.total_records_analyzed.toLocaleString() + '</div><div class="a-label">Records Analyzed</div></div>';
+        html += '<div class="analytics-card ' + (s.erratic_ships > 0 ? 'danger' : 'good') + '"><div class="a-val">' + s.erratic_ships + '</div><div class="a-label">Erratic Ships</div></div>';
+        html += '<div class="analytics-card"><div class="a-val">' + s.fleet_avg_speed + '</div><div class="a-label">Fleet Avg Speed</div></div>';
+        html += '<div class="analytics-card warn"><div class="a-val">' + s.fleet_max_speed + '</div><div class="a-label">Fleet Max Speed</div></div>';
+        html += '<div class="analytics-card"><div class="a-val">' + s.hours_analyzed + 'h</div><div class="a-label">Time Window</div></div>';
+        html += '</div>';
+
+        html += '<h4 style="color:#7c4dff;font-size:13px;margin:14px 0 8px;border-bottom:1px solid rgba(124,77,255,.2);padding-bottom:6px">Fleet Ships — Ranked by Max Speed</h4>';
+
+        ships.forEach(ship => {
+          const col = natColors[ship.nationality] || '#888';
+          const speedClass = ship.max_speed > 20 ? 'fast' : ship.is_erratic ? 'erratic' : 'normal';
+          html += '<div class="analytics-ship-row" onclick="analyticsShipClick(\'' + ship._id.replace(/'/g, "\\'") + '\',\'' + (ship.ship_name || '').replace(/'/g, "\\'") + '\')">';
+          html += '<div class="ship-dot" style="background:' + col + '"></div>';
+          html += '<div class="ship-info"><div class="ship-nm">' + (ship.ship_name || ship._id) + '</div>';
+          html += '<div class="ship-meta">Avg: ' + ship.avg_speed + ' kn | Accel: ' + ship.last_acceleration + '/h | StdDev: ' + ship.last_speed_std_dev;
+          if (ship.is_erratic) html += ' <span class="anomaly-badge">ERRATIC</span>';
+          html += '</div></div>';
+          html += '<div class="ship-stat ' + speedClass + '">' + ship.max_speed + ' kn</div>';
+          html += '</div>';
+        });
+
+        container.innerHTML = html;
+      } catch (e) {
+        container.innerHTML = '<p style="color:#ff4444">Error: ' + e.message + '</p>';
+      }
+    }
+
+    function analyticsShipClick(suid, name) {
+      switchAnalyticsTab('ship');
+      document.getElementById('analytics-suid').value = suid;
+      runShipAnalytics();
+    }
+
+    async function runShipAnalytics() {
+      const suid = document.getElementById('analytics-suid').value.trim();
+      if (!suid) { alert('Enter a SUID'); return; }
+      const windowSize = document.getElementById('analytics-window').value || 50;
+      const limit = document.getElementById('analytics-limit').value || 500;
+      const container = document.getElementById('ship-analytics-results');
+      container.innerHTML = '<div class="spinner" style="margin:20px auto"></div>';
+
+      try {
+        const res = await fetch(API_BASE + '/api/analytics/' + encodeURIComponent(suid) + '?window=' + windowSize + '&limit=' + limit);
+        const json = await res.json();
+        if (!json.success) { container.innerHTML = '<p style="color:#ff4444">' + json.error + '</p>'; return; }
+
+        const s = json.summary;
+        const data = json.data || [];
+        const shipName = data[0]?.ship_name || suid;
+
+        let html = '<h4 style="color:#fff;font-size:14px;margin-bottom:4px">' + shipName + '</h4>';
+        html += '<div style="color:#888;font-size:11px;margin-bottom:12px">Query: <strong style="color:#7c4dff">' + json.query_time_ms + 'ms</strong> | Window: ' + windowSize + ' docs | Records: ' + s.total_records + '</div>';
+
+        // Summary cards
+        html += '<div class="analytics-summary-grid">';
+        html += '<div class="analytics-card"><div class="a-val">' + s.speed.avg + '</div><div class="a-label">Avg Speed (kn)</div></div>';
+        html += '<div class="analytics-card warn"><div class="a-val">' + s.speed.max + '</div><div class="a-label">Max Speed</div></div>';
+        html += '<div class="analytics-card"><div class="a-val">' + s.speed.min + '</div><div class="a-label">Min Speed</div></div>';
+        html += '<div class="analytics-card"><div class="a-val">' + s.acceleration.avg + '</div><div class="a-label">Avg Accel (/h)</div></div>';
+        html += '<div class="analytics-card ' + (s.anomalies.count > 10 ? 'danger' : s.anomalies.count > 0 ? 'warn' : 'good') + '"><div class="a-val">' + s.anomalies.count + '</div><div class="a-label">Anomalies</div></div>';
+        html += '<div class="analytics-card"><div class="a-val">' + s.anomalies.pct + '%</div><div class="a-label">Anomaly Rate</div></div>';
+        html += '</div>';
+
+        // Speed chart (canvas)
+        html += '<h4 style="color:#7c4dff;font-size:12px;margin:14px 0 6px">Speed vs Rolling Average</h4>';
+        html += '<div class="chart-area"><canvas id="speed-chart"></canvas></div>';
+
+        // Acceleration chart
+        html += '<h4 style="color:#7c4dff;font-size:12px;margin:10px 0 6px">Acceleration (derivative)</h4>';
+        html += '<div class="chart-area"><canvas id="accel-chart"></canvas></div>';
+
+        // Threat score EMA chart
+        html += '<h4 style="color:#7c4dff;font-size:12px;margin:10px 0 6px">Threat Score (EMA smoothed)</h4>';
+        html += '<div class="chart-area"><canvas id="threat-chart"></canvas></div>';
+
+        // Anomaly table
+        const anomalies = data.filter(d => d.isSpeedAnomaly);
+        if (anomalies.length > 0) {
+          html += '<h4 style="color:#ff4444;font-size:12px;margin:14px 0 6px">Speed Anomalies <span class="anomaly-badge">' + anomalies.length + '</span></h4>';
+          html += '<div style="max-height:200px;overflow-y:auto"><table class="result-table"><thead><tr><th>Time</th><th>Speed</th><th>Rolling Avg</th><th>StdDev</th><th>Accel</th></tr></thead><tbody>';
+          anomalies.slice(0, 50).forEach(a => {
+            const t = new Date(a.reported_time_info).toLocaleString();
+            html += '<tr><td>' + t + '</td><td style="color:#ff4444;font-weight:700">' + a.speed.toFixed(2) + '</td><td>' + a.rollingAvgSpeed + '</td><td>' + a.speedStdDev + '</td><td>' + a.acceleration + '</td></tr>';
+          });
+          html += '</tbody></table></div>';
+        }
+
+        // Window functions used
+        html += '<h4 style="color:#7c4dff;font-size:12px;margin:14px 0 6px">Window Functions Used</h4>';
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:11px">';
+        const funcs = [
+          ['$avg', 'Rolling average speed'],
+          ['$max / $min', 'Rolling speed range'],
+          ['$stdDevPop', 'Speed variance (anomaly detection)'],
+          ['$derivative', 'Acceleration (speed/hour)'],
+          ['$shift', 'Previous position (course change)'],
+          ['$expMovingAvg', 'Threat score smoothing'],
+          ['$rank', 'Speed ranking'],
+          ['$count', 'Activity detection'],
+          ['$documentNumber', 'Record sequencing'],
+        ];
+        funcs.forEach(([fn, desc]) => {
+          html += '<div style="padding:4px 6px;background:rgba(124,77,255,.08);border-radius:4px;margin-bottom:2px"><code style="color:#7c4dff;font-size:10px">' + fn + '</code><div style="color:#888;font-size:9px">' + desc + '</div></div>';
+        });
+        html += '</div>';
+
+        container.innerHTML = html;
+
+        // Draw charts using canvas
+        requestAnimationFrame(() => {
+          drawSpeedChart(data);
+          drawAccelChart(data);
+          drawThreatChart(data);
+        });
+      } catch (e) {
+        container.innerHTML = '<p style="color:#ff4444">Error: ' + e.message + '</p>';
+      }
+    }
+
+    function drawSpeedChart(data) {
+      const canvas = document.getElementById('speed-chart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width; canvas.height = rect.height;
+      const w = canvas.width, h = canvas.height;
+      const pad = { top: 10, bottom: 20, left: 40, right: 10 };
+
+      const speeds = data.map(d => d.speed);
+      const avgSpeeds = data.map(d => d.rollingAvgSpeed);
+      const anomalies = data.map(d => d.isSpeedAnomaly);
+      const maxY = Math.max(...speeds, ...avgSpeeds) * 1.1 || 30;
+      const n = data.length;
+
+      ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(0, 0, w, h);
+
+      // Grid lines
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.top + (h - pad.top - pad.bottom) * (1 - i / 4);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#555'; ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText((maxY * i / 4).toFixed(0), pad.left - 4, y + 3);
+      }
+
+      const xScale = (w - pad.left - pad.right) / Math.max(n - 1, 1);
+      const yScale = (h - pad.top - pad.bottom) / maxY;
+      const toX = i => pad.left + i * xScale;
+      const toY = v => h - pad.bottom - v * yScale;
+
+      // Anomaly markers
+      ctx.fillStyle = 'rgba(255,68,68,0.3)';
+      for (let i = 0; i < n; i++) {
+        if (anomalies[i]) { ctx.beginPath(); ctx.arc(toX(i), toY(speeds[i]), 3, 0, Math.PI * 2); ctx.fill(); }
+      }
+
+      // Speed line
+      ctx.strokeStyle = 'rgba(0,212,255,0.5)'; ctx.lineWidth = 1; ctx.beginPath();
+      for (let i = 0; i < n; i++) { i === 0 ? ctx.moveTo(toX(i), toY(speeds[i])) : ctx.lineTo(toX(i), toY(speeds[i])); }
+      ctx.stroke();
+
+      // Rolling avg line
+      ctx.strokeStyle = '#ff9800'; ctx.lineWidth = 2; ctx.beginPath();
+      for (let i = 0; i < n; i++) { if (avgSpeeds[i] != null) { i === 0 ? ctx.moveTo(toX(i), toY(avgSpeeds[i])) : ctx.lineTo(toX(i), toY(avgSpeeds[i])); } }
+      ctx.stroke();
+
+      // Legend
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = 'rgba(0,212,255,0.7)'; ctx.fillText('Speed', pad.left + 5, pad.top + 10);
+      ctx.fillStyle = '#ff9800'; ctx.fillText('Rolling Avg', pad.left + 55, pad.top + 10);
+      ctx.fillStyle = 'rgba(255,68,68,0.7)'; ctx.fillText('● Anomaly', pad.left + 130, pad.top + 10);
+    }
+
+    function drawAccelChart(data) {
+      const canvas = document.getElementById('accel-chart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width; canvas.height = rect.height;
+      const w = canvas.width, h = canvas.height;
+      const pad = { top: 10, bottom: 20, left: 40, right: 10 };
+
+      const accels = data.map(d => d.acceleration || 0);
+      const maxAbs = Math.max(Math.abs(Math.min(...accels)), Math.abs(Math.max(...accels))) * 1.1 || 1;
+      const n = data.length;
+
+      ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(0, 0, w, h);
+
+      // Zero line
+      const midY = pad.top + (h - pad.top - pad.bottom) / 2;
+      ctx.strokeStyle = 'rgba(255,255,255,0.1)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(pad.left, midY); ctx.lineTo(w - pad.right, midY); ctx.stroke();
+      ctx.fillStyle = '#555'; ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
+      ctx.fillText('0', pad.left - 4, midY + 3);
+      ctx.fillText('+' + maxAbs.toFixed(0), pad.left - 4, pad.top + 8);
+      ctx.fillText('-' + maxAbs.toFixed(0), pad.left - 4, h - pad.bottom);
+
+      const xScale = (w - pad.left - pad.right) / Math.max(n - 1, 1);
+      const yHalf = (h - pad.top - pad.bottom) / 2;
+      const toX = i => pad.left + i * xScale;
+      const toY = v => midY - (v / maxAbs) * yHalf;
+
+      // Bars
+      const barW = Math.max(xScale * 0.6, 1);
+      for (let i = 0; i < n; i++) {
+        const v = accels[i];
+        ctx.fillStyle = v >= 0 ? 'rgba(76,175,80,0.6)' : 'rgba(255,68,68,0.6)';
+        const y0 = midY, y1 = toY(v);
+        ctx.fillRect(toX(i) - barW / 2, Math.min(y0, y1), barW, Math.abs(y1 - y0) || 1);
+      }
+
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = 'rgba(76,175,80,0.7)'; ctx.fillText('Accel', pad.left + 5, pad.top + 10);
+      ctx.fillStyle = 'rgba(255,68,68,0.7)'; ctx.fillText('Decel', pad.left + 50, pad.top + 10);
+    }
+
+    function drawThreatChart(data) {
+      const canvas = document.getElementById('threat-chart');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width; canvas.height = rect.height;
+      const w = canvas.width, h = canvas.height;
+      const pad = { top: 10, bottom: 20, left: 40, right: 10 };
+
+      const threats = data.map(d => (typeof d.threat_score === 'number' ? d.threat_score : 0));
+      const emas = data.map(d => d.threatScoreEMA || 0);
+      const maxY = 105;
+      const n = data.length;
+
+      ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(0, 0, w, h);
+
+      // Grid
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.top + (h - pad.top - pad.bottom) * (1 - i / 4);
+        ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(w - pad.right, y); ctx.stroke();
+        ctx.fillStyle = '#555'; ctx.font = '9px sans-serif'; ctx.textAlign = 'right';
+        ctx.fillText(Math.round(maxY * i / 4), pad.left - 4, y + 3);
+      }
+
+      const xScale = (w - pad.left - pad.right) / Math.max(n - 1, 1);
+      const yScale = (h - pad.top - pad.bottom) / maxY;
+      const toX = i => pad.left + i * xScale;
+      const toY = v => h - pad.bottom - v * yScale;
+
+      // Raw threat dots
+      ctx.fillStyle = 'rgba(156,39,176,0.2)';
+      for (let i = 0; i < n; i++) { ctx.beginPath(); ctx.arc(toX(i), toY(threats[i]), 1.5, 0, Math.PI * 2); ctx.fill(); }
+
+      // EMA line
+      ctx.strokeStyle = '#e91e63'; ctx.lineWidth = 2; ctx.beginPath();
+      for (let i = 0; i < n; i++) { i === 0 ? ctx.moveTo(toX(i), toY(emas[i])) : ctx.lineTo(toX(i), toY(emas[i])); }
+      ctx.stroke();
+
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = 'rgba(156,39,176,0.5)'; ctx.fillText('Raw', pad.left + 5, pad.top + 10);
+      ctx.fillStyle = '#e91e63'; ctx.fillText('EMA Smoothed', pad.left + 35, pad.top + 10);
     }
   </script>
 </body>

@@ -5,8 +5,8 @@ const logger = require('../utils/logger');
 const CTRACK_INDEXES = [
   {
     key: { suid: 1 },
-    options: { unique: true, name: 'idx_suid_unique' },
-    purpose: 'Primary key lookup (stable per ship)',
+    options: { name: 'idx_suid' },
+    purpose: 'Ship lookup by suid',
   },
   {
     key: { trackLocation: '2dsphere' },
@@ -30,7 +30,7 @@ const CTRACK_INDEXES = [
   },
   {
     key: { mmsi_number: 1 },
-    options: { unique: true, name: 'idx_mmsi_unique' },
+    options: { name: 'idx_mmsi' },
     purpose: 'MMSI number lookup',
   },
   {

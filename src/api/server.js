@@ -1239,6 +1239,223 @@ app.post('/api/benchmark/cancel', (req, res) => {
   res.json({ success: true });
 });
 
+// ─── GET /api/analytics/:suid ─────────────────────────────────────────
+// Window function analytics for a single ship's timeseries data
+app.get('/api/analytics/:suid', async (req, res) => {
+  try {
+    const tsCol = await getTimeseriesCollection();
+    const suid = req.params.suid;
+    const windowSize = Math.min(parseInt(req.query.window) || 50, 200);
+    const limit = Math.min(parseInt(req.query.limit) || 500, 5000);
+    const timeFrom = req.query.time_from ? new Date(req.query.time_from) : null;
+    const timeTo = req.query.time_to ? new Date(req.query.time_to) : null;
+
+    const matchFilter = { suid };
+    if (timeFrom || timeTo) {
+      matchFilter.reported_time_info = {};
+      if (timeFrom) matchFilter.reported_time_info.$gte = timeFrom;
+      if (timeTo) matchFilter.reported_time_info.$lte = timeTo;
+    }
+
+    const startTime = Date.now();
+
+    const pipeline = [
+      { $match: matchFilter },
+      { $sort: { reported_time_info: 1 } },
+      { $limit: limit },
+      {
+        $setWindowFields: {
+          partitionBy: '$suid',
+          sortBy: { reported_time_info: 1 },
+          output: {
+            rollingAvgSpeed: { $avg: '$speed', window: { documents: [-windowSize, 0] } },
+            rollingMaxSpeed: { $max: '$speed', window: { documents: [-windowSize, 0] } },
+            rollingMinSpeed: { $min: '$speed', window: { documents: [-windowSize, 0] } },
+            speedStdDev: { $stdDevPop: '$speed', window: { documents: [-windowSize, 0] } },
+            acceleration: { $derivative: { input: '$speed', unit: 'hour' }, window: { documents: [-2, 0] } },
+            prevLatitude: { $shift: { output: '$latitude', by: -1, default: null } },
+            prevLongitude: { $shift: { output: '$longitude', by: -1, default: null } },
+            prevSpeed: { $shift: { output: '$speed', by: -1, default: null } },
+            threatScoreEMA: { $expMovingAvg: { input: '$threat_score', N: windowSize } },
+            speedRank: { $rank: {} },
+            docNumber: { $documentNumber: {} },
+            rollingCount: { $count: {}, window: { documents: [-windowSize, 0] } },
+          }
+        }
+      },
+      {
+        $addFields: {
+          isSpeedAnomaly: {
+            $cond: [
+              { $and: [
+                { $gt: ['$speedStdDev', 0] },
+                { $gt: [{ $abs: { $subtract: ['$speed', '$rollingAvgSpeed'] } }, { $multiply: ['$speedStdDev', 2] }] }
+              ] },
+              true, false
+            ]
+          },
+        }
+      },
+      {
+        $project: {
+          _id: 0, reported_time_info: 1, latitude: 1, longitude: 1,
+          speed: 1, course: 1, threat_score: 1, ship_name: 1,
+          rollingAvgSpeed: { $round: ['$rollingAvgSpeed', 3] },
+          rollingMaxSpeed: { $round: ['$rollingMaxSpeed', 3] },
+          rollingMinSpeed: { $round: ['$rollingMinSpeed', 3] },
+          speedStdDev: { $round: ['$speedStdDev', 3] },
+          acceleration: { $round: [{ $ifNull: ['$acceleration', 0] }, 3] },
+          prevLatitude: 1, prevLongitude: 1, prevSpeed: 1,
+          threatScoreEMA: 1, speedRank: 1, docNumber: 1,
+          rollingCount: 1, isSpeedAnomaly: 1,
+        }
+      }
+    ];
+
+    const data = await tsCol.aggregate(pipeline, { allowDiskUse: true }).toArray();
+    const duration = Date.now() - startTime;
+
+    data.forEach(doc => {
+      ['course', 'threat_score', 'speedRank', 'docNumber', 'rollingCount'].forEach(k => {
+        if (doc[k] != null) doc[k] = toLongNum(doc[k]);
+      });
+      if (doc.threatScoreEMA != null) doc.threatScoreEMA = parseFloat(Number(doc.threatScoreEMA).toFixed(2));
+    });
+
+    const anomalies = data.filter(d => d.isSpeedAnomaly);
+    const speeds = data.map(d => d.speed).filter(s => s != null);
+    const accels = data.map(d => d.acceleration).filter(a => a != null && a !== 0);
+    const summary = {
+      total_records: data.length, window_size: windowSize,
+      time_range: { from: data[0]?.reported_time_info || null, to: data[data.length - 1]?.reported_time_info || null },
+      speed: {
+        avg: speeds.length ? parseFloat((speeds.reduce((a, b) => a + b, 0) / speeds.length).toFixed(2)) : 0,
+        min: speeds.length ? parseFloat(Math.min(...speeds).toFixed(2)) : 0,
+        max: speeds.length ? parseFloat(Math.max(...speeds).toFixed(2)) : 0,
+      },
+      acceleration: {
+        avg: accels.length ? parseFloat((accels.reduce((a, b) => a + b, 0) / accels.length).toFixed(3)) : 0,
+        min: accels.length ? parseFloat(Math.min(...accels).toFixed(3)) : 0,
+        max: accels.length ? parseFloat(Math.max(...accels).toFixed(3)) : 0,
+      },
+      anomalies: { count: anomalies.length, pct: data.length > 0 ? parseFloat(((anomalies.length / data.length) * 100).toFixed(1)) : 0 },
+    };
+
+    logQuery({ endpoint: '/api/analytics/:suid', collection: 'tracks_local_timeseries', operation: 'aggregate($setWindowFields)', query: matchFilter, sort: { reported_time_info: 1 }, limit, duration_ms: duration, result_count: data.length, index_used: 'idx_ts_suid_time' });
+    logger.info('API', `GET /api/analytics/${suid} - ${data.length} records, ${anomalies.length} anomalies in ${duration}ms`);
+
+    res.json({ success: true, suid, query_time_ms: duration, window_size: windowSize, summary, data });
+  } catch (error) {
+    logger.error('API', `GET /api/analytics/:suid failed:`, error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── GET /api/analytics/fleet/summary ─────────────────────────────────
+// Fleet-wide analytics using window functions across all ships
+app.get('/api/analytics/fleet/summary', async (req, res) => {
+  try {
+    const tsCol = await getTimeseriesCollection();
+    const hoursBack = Math.min(parseInt(req.query.hours) || 24, 720);
+    const since = new Date(Date.now() - hoursBack * 3600000);
+
+    const startTime = Date.now();
+
+    const pipeline = [
+      { $match: { reported_time_info: { $gte: since } } },
+      { $sort: { suid: 1, reported_time_info: 1 } },
+      {
+        $setWindowFields: {
+          partitionBy: '$suid',
+          sortBy: { reported_time_info: 1 },
+          output: {
+            shipAvgSpeed: { $avg: '$speed', window: { documents: ['unbounded', 'unbounded'] } },
+            shipMaxSpeed: { $max: '$speed', window: { documents: ['unbounded', 'unbounded'] } },
+            shipRecordCount: { $count: {}, window: { documents: ['unbounded', 'unbounded'] } },
+            acceleration: { $derivative: { input: '$speed', unit: 'hour' }, window: { documents: [-2, 0] } },
+            speedStdDev: { $stdDevPop: '$speed', window: { documents: [-20, 0] } },
+          }
+        }
+      },
+      {
+        $group: {
+          _id: '$suid',
+          ship_name: { $last: '$ship_name' },
+          latitude: { $last: '$latitude' },
+          longitude: { $last: '$longitude' },
+          last_speed: { $last: '$speed' },
+          last_time: { $last: '$reported_time_info' },
+          avg_speed: { $last: '$shipAvgSpeed' },
+          max_speed: { $last: '$shipMaxSpeed' },
+          record_count: { $last: '$shipRecordCount' },
+          last_acceleration: { $last: '$acceleration' },
+          last_speed_std_dev: { $last: '$speedStdDev' },
+          nationality: { $last: '$nationality' },
+          threat_score: { $last: '$threat_score' },
+        }
+      },
+      {
+        $addFields: {
+          avg_speed: { $round: ['$avg_speed', 2] },
+          max_speed: { $round: ['$max_speed', 2] },
+          last_acceleration: { $round: [{ $ifNull: ['$last_acceleration', 0] }, 3] },
+          last_speed_std_dev: { $round: [{ $ifNull: ['$last_speed_std_dev', 0] }, 3] },
+          is_erratic: { $cond: [{ $gt: [{ $ifNull: ['$last_speed_std_dev', 0] }, 5] }, true, false] },
+        }
+      },
+      { $sort: { max_speed: -1 } }
+    ];
+
+    const data = await tsCol.aggregate(pipeline, { allowDiskUse: true }).toArray();
+    const duration = Date.now() - startTime;
+
+    data.forEach(doc => {
+      ['nationality', 'threat_score', 'record_count'].forEach(k => {
+        if (doc[k] != null) doc[k] = toLongNum(doc[k]);
+      });
+    });
+
+    const erraticShips = data.filter(d => d.is_erratic);
+    const fleetSummary = {
+      total_ships: data.length, hours_analyzed: hoursBack, since: since.toISOString(),
+      fleet_avg_speed: data.length ? parseFloat((data.reduce((a, d) => a + (d.avg_speed || 0), 0) / data.length).toFixed(2)) : 0,
+      fleet_max_speed: data.length ? parseFloat(Math.max(...data.map(d => d.max_speed || 0)).toFixed(2)) : 0,
+      erratic_ships: erraticShips.length,
+      total_records_analyzed: data.reduce((a, d) => a + (d.record_count || 0), 0),
+    };
+
+    logQuery({ endpoint: '/api/analytics/fleet/summary', collection: 'tracks_local_timeseries', operation: 'aggregate($setWindowFields+$group)', query: { reported_time_info: { $gte: since } }, duration_ms: duration, result_count: data.length, index_used: 'idx_ts_suid_time' });
+    logger.info('API', `GET /api/analytics/fleet/summary - ${data.length} ships in ${duration}ms (last ${hoursBack}h)`);
+
+    res.json({ success: true, query_time_ms: duration, summary: fleetSummary, ships: data });
+  } catch (error) {
+    logger.error('API', `GET /api/analytics/fleet/summary failed:`, error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── GET /api/doc-count ───────────────────────────────────────────────
+// Count timeseries documents over a given number of days
+app.get('/api/doc-count', async (req, res) => {
+  try {
+    const tsCol = await getTimeseriesCollection();
+    const days = Math.min(Math.max(parseInt(req.query.days) || 7, 1), 365);
+    const since = new Date(Date.now() - days * 24 * 3600000);
+
+    const startTime = Date.now();
+    const count = await tsCol.countDocuments({ reported_time_info: { $gte: since } });
+    const duration = Date.now() - startTime;
+
+    logQuery({ endpoint: '/api/doc-count', collection: 'tracks_local_timeseries', operation: 'countDocuments', query: { reported_time_info: { $gte: since } }, duration_ms: duration, result_count: count, index_used: 'idx_ts_suid_time' });
+    logger.info('API', `GET /api/doc-count - ${count.toLocaleString()} docs in last ${days} days (${duration}ms)`);
+
+    res.json({ success: true, days, since: since.toISOString(), count, query_time_ms: duration });
+  } catch (error) {
+    logger.error('API', `GET /api/doc-count failed:`, error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ─── Health check ────────────────────────────────────────────────────
 app.get('/health', async (req, res) => {
   try {
@@ -1271,6 +1488,9 @@ async function start() {
       logger.info('API', `  GET  /api/performance`);
       logger.info('API', `  GET  /api/query-log?since=0`);
       logger.info('API', `  GET  /feed/geojson`);
+      logger.info('API', `  GET  /api/analytics/:suid`);
+      logger.info('API', `  GET  /api/analytics/fleet/summary`);
+      logger.info('API', `  GET  /api/doc-count?days=7`);
       logger.info('API', `  GET  /ship-map-viewer.html`);
     });
   } catch (error) {

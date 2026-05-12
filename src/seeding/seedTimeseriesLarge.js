@@ -3,18 +3,19 @@ const { connect, getCollection, getTimeseriesCollection, ensureTimeseriesCollect
 const logger = require('../utils/logger');
 
 // ─── Configuration ───────────────────────────────────────────────────
-const TOTAL_SHIPS      = 50;
-const RECORDS_PER_SHIP = 50000;
-const BATCH_SIZE       = 5000;
-const TWO_MONTHS_MS    = 60 * 24 * 60 * 60 * 1000; // 60 days in ms
+const SHIPS_TO_PICK = 50;              // Pick 50 unique ships from ctrack_data
+const DOCS_PER_SHIP = 2000;            // 2000 history records per ship
+const TOTAL_DOCS = SHIPS_TO_PICK * DOCS_PER_SHIP; // 100,000 total
+const BATCH_SIZE = 5_000;              // Insert 5k docs per batch
+const DAYS_BACK = 30;                  // Spread over last 1 month
 
-// ─── Nationality codes (MID codes used in MMSI) ─────────────────────
+// ─── These are only used for doc generation, not ship registry ───────
 const NATIONALITIES = [
   273, 419, 501, 502, 503, 504, 505, 506, 508, 510,
   511, 512, 514, 515, 516, 518, 519, 520, 538,
 ];
 
-// ─── Ship name word pools (50 × 50 = 2,500 base names) ──────────────
+// ─── Ship name word pools (kept for reference only) ──────────────────
 const FIRST_WORDS = [
   'Northern','Southern','Eastern','Western','Pacific','Atlantic','Arctic','Indian','Blue','Golden',
   'Silver','Crystal','Royal','Imperial','Grand','Noble','Brave','Swift','Mighty','Iron',
@@ -82,71 +83,68 @@ function formatSuid(mmsi, d) {
   return `${mmsi}_${dd}-${mm}-${yy}_${hh}:${mi}:${ss}:${ms}`;
 }
 
-// ─── Build the 125K ship registry ────────────────────────────────────
-function buildShipRegistry() {
-  logger.info('SEED', 'Building ship registry...');
-  const baseNameCount = FIRST_WORDS.length * SECOND_WORDS.length; // 2500
-  const ships = [];
-  const natSeq = {};
-  NATIONALITIES.forEach(n => { natSeq[n] = 0; });
+// ─── Load ships from ctrack_data (uses EXACT same suids as the map) ──
+async function loadShipsFromCtrack() {
+  const ctrackCol = await getCollection();
+  logger.info('SEED-TS', `Loading ${SHIPS_TO_PICK} ships from ctrack_data...`);
 
-  const seedTime = new Date();
+  const docs = await ctrackCol.find({})
+    .sort({ reported_time_info: -1 })
+    .limit(SHIPS_TO_PICK)
+    .project({
+      _id: 0, suid: 1, ship_name: 1, latitude: 1, longitude: 1,
+      speed: 1, course: 1, nationality: 1, mmsi_number: 1,
+      interface_sensor_type: 1, surv_loc_id: 1, source_call_sign: 1,
+      'vessel_info.ship_type': 1, 'vessel_info.total_vessel_length': 1,
+      'vessel_info.total_vessel_width': 1, 'vessel_info.length_bow': 1,
+      'vessel_info.length_stream': 1, 'vessel_info.cargo_type': 1,
+      'vessel_info.imo_no': 1, 'vessel_info.draught': 1,
+    })
+    .toArray();
 
-  for (let i = 0; i < TOTAL_SHIPS; i++) {
-    // Name: "Northern Voyager", "Northern Voyager 2", ...
-    const baseIdx = i % baseNameCount;
-    const suffix  = Math.floor(i / baseNameCount);
-    const first   = FIRST_WORDS[baseIdx % FIRST_WORDS.length];
-    const second  = SECOND_WORDS[Math.floor(baseIdx / FIRST_WORDS.length)];
-    const shipName = suffix === 0 ? `${first} ${second}` : `${first} ${second} ${suffix + 1}`;
-
-    // Nationality & MMSI
-    const nat = NATIONALITIES[i % NATIONALITIES.length];
-    natSeq[nat]++;
-    const mmsi = parseInt(`${nat}${String(natSeq[nat]).padStart(6, '0')}`);
-
-    // Stable SUID (generated once at creation)
-    const creationTime = new Date(seedTime.getTime() - randomInt(0, 30 * 86400000));
-    const suid = formatSuid(mmsi, creationTime);
-
-    // Place in a random maritime zone
-    const zone = ZONES[i % ZONES.length];
-    const lat = randomFloat(zone.latMin, zone.latMax);
-    const lng = randomFloat(zone.lngMin, zone.lngMax);
-
-    // Static vessel properties
-    const vesselLength = randomInt(50, 400);
-    const vesselWidth  = randomInt(8, 65);
-    const shipType     = randomItem(SHIP_TYPES);
-    const imoNo        = randomInt(1000000, 9999999);
-    const survLocId    = randomItem(SURV_LOC_IDS);
-    const sensorType   = randomItem(SENSOR_TYPES);
-    const cargoType    = randomItem(CARGO_TYPES);
-    const draught      = parseFloat(randomFloat(3, 20).toFixed(1));
-    const callSign     = `${String.fromCharCode(65+randomInt(0,25))}${String.fromCharCode(65+randomInt(0,25))}${randomInt(100,999)}`;
-
-    ships.push({
-      idx: i, suid, mmsi, shipName, nat, lat, lng,
-      vesselLength, vesselWidth, shipType, imoNo, survLocId,
-      sensorType, cargoType, draught, callSign,
-      lengthBow: Math.floor(vesselLength * 0.15),
-      lengthStern: vesselLength - Math.floor(vesselLength * 0.15),
-      speed: parseFloat(randomFloat(0, 25).toFixed(2)),
-      course: randomInt(0, 359),
-    });
+  if (docs.length === 0) {
+    throw new Error('No ships found in ctrack_data. Run "npm run seed-data" first.');
   }
 
-  logger.info('SEED', `Registry built: ${ships.length.toLocaleString()} ships`);
+  const toLong = v => (v && typeof v === 'object' && typeof v.toNumber === 'function') ? v.toNumber() : v;
+
+  const ships = docs.map((doc, i) => {
+    const vi = doc.vessel_info?.[0] || {};
+    return {
+      idx: i,
+      suid: doc.suid,
+      shipName: doc.ship_name,
+      lat: doc.latitude,
+      lng: doc.longitude,
+      speed: doc.speed || 0,
+      course: toLong(doc.course) || 0,
+      nat: toLong(doc.nationality) || 273,
+      mmsi: toLong(doc.mmsi_number) || 0,
+      sensorType: toLong(doc.interface_sensor_type) || 1,
+      survLocId: toLong(doc.surv_loc_id) || 50000,
+      callSign: doc.source_call_sign || '',
+      shipType: toLong(vi.ship_type) || 30,
+      vesselLength: toLong(vi.total_vessel_length) || 100,
+      vesselWidth: toLong(vi.total_vessel_width) || 15,
+      lengthBow: toLong(vi.length_bow) || 15,
+      lengthStern: toLong(vi.length_stream) || 85,
+      cargoType: toLong(vi.cargo_type) || 0,
+      imoNo: toLong(vi.imo_no) || 1000000,
+      draught: vi.draught || 5.0,
+    };
+  });
+
+  logger.info('SEED-TS', `Loaded ${ships.length} ships from ctrack_data`);
   return ships;
 }
 
-// ─── Generate a full CTRACK document (matches real schema) ───────────
-function generateCtrackDoc(ship, now) {
-  const timeStr     = formatCtrackDate(now);
-  const createdStr  = timeStr + String(randomInt(10, 99)); // extra digits like sample
+// ─── Generate a timeseries document ──────────────────────────────────
+function generateTimeseriesDoc(ship, timestamp) {
+  const createdStr  = formatCtrackDate(timestamp) + String(randomInt(10, 99));
+  const timeStr     = formatCtrackDate(timestamp);
 
   return {
-    reported_time_info: now,
+    reported_time_info: timestamp,
     suid: ship.suid,
     speed: parseFloat(ship.speed.toFixed(6)),
     identity: Long.fromNumber(0),
@@ -183,7 +181,7 @@ function generateCtrackDoc(ship, now) {
     pans_info: [],
     source_call_sign: ship.callSign,
     sticky_flag: Long.fromNumber(0),
-    latitude: ship.lat,
+    latitude: ship.lat + randomFloat(-0.01, 0.01),  // Slightly vary position
     ship_name: ship.shipName,
     station_contriburtion: [],
     no_contrib: Long.fromNumber(1),
@@ -203,7 +201,7 @@ function generateCtrackDoc(ship, now) {
     remarks: randomItem(REMARKS_POOL),
     surv_loc_id: Long.fromNumber(ship.survLocId),
     cov_vx_vx: Long.fromNumber(0),
-    timestamp: now,
+    timestamp: timestamp,
     no_of_surv: Long.fromNumber(1),
     track_prefix: '',
     contriburtion: [{
@@ -211,8 +209,8 @@ function generateCtrackDoc(ship, now) {
       surv_loc_id: Long.fromNumber(ship.survLocId),
       pos: {
         altitude: Long.fromNumber(0),
-        latitude: ship.lat,
-        longitude: ship.lng,
+        latitude: ship.lat + randomFloat(-0.01, 0.01),
+        longitude: ship.lng + randomFloat(-0.01, 0.01),
       },
       src_track_no: Long.fromNumber(ship.mmsi),
       track_number: Long.fromNumber(0),
@@ -220,10 +218,10 @@ function generateCtrackDoc(ship, now) {
       contrib_time: timeStr,
     }],
     interface_sensor_type: Long.fromNumber(ship.sensorType),
-    course: Long.fromNumber(ship.course),
+    course: Long.fromNumber(ship.course + randomInt(-5, 5)),
     trackAltitude: Long.fromNumber(0),
     no_station_contrib: Long.fromNumber(0),
-    longitude: ship.lng,
+    longitude: ship.lng + randomFloat(-0.01, 0.01),
     classification_info_track_type: Long.fromNumber(1),
     mmsi_number: Long.fromNumber(ship.mmsi),
     classification_info_css_category: Long.fromNumber(1),
@@ -233,124 +231,90 @@ function generateCtrackDoc(ship, now) {
     classification_info_css_sub_class: Long.fromNumber(1),
     track_processed_flag: Long.fromNumber(0),
     cov_x_x: Long.fromNumber(0),
-    // App-level fields
-    trackLocation: { type: 'Point', coordinates: [ship.lng, ship.lat] },
+    trackLocation: { type: 'Point', coordinates: [ship.lng + randomFloat(-0.01, 0.01), ship.lat + randomFloat(-0.01, 0.01)] },
   };
 }
 
-// ─── Main seed routine ───────────────────────────────────────────────
-async function seedData() {
+// ─── Main seeding routine ────────────────────────────────────────────
+async function seedTimeseriesLarge() {
   try {
     await connect();
-    const ctrackCol = await getCollection();
-    const tsCol     = await getTimeseriesCollection();
+    const tsCol = await getTimeseriesCollection();
 
     // Ensure timeseries collection exists
     await ensureTimeseriesCollection();
 
-    // Check existing
-    const existingTsCount = await tsCol.countDocuments();
-    const totalRecords    = TOTAL_SHIPS * RECORDS_PER_SHIP;
-    if (existingTsCount >= totalRecords) {
-      logger.info('SEED', `timeseries already has ${existingTsCount.toLocaleString()} docs. Run "npm run reset" to re-seed.`);
-      return;
-    }
-    if (existingTsCount > 0) {
-      logger.info('SEED', `Clearing ${existingTsCount.toLocaleString()} existing timeseries docs...`);
-      await tsCol.deleteMany({});
-    }
-    await ctrackCol.deleteMany({});
+    // Load ships from ctrack_data (matching suids)
+    const ships = await loadShipsFromCtrack();
 
-    // Build ship registry
-    const ships = buildShipRegistry();
+    logger.info('SEED-TS', `Starting to seed ${TOTAL_DOCS.toLocaleString()} timeseries documents...`);
+    logger.info('SEED-TS', `${ships.length} ships × ${DOCS_PER_SHIP} docs each, spread over last ${DAYS_BACK} days`);
 
-    logger.info('SEED', `Seeding ${TOTAL_SHIPS.toLocaleString()} ships × ${RECORDS_PER_SHIP.toLocaleString()} records = ${totalRecords.toLocaleString()} timeseries docs...`);
-    logger.info('SEED', `ctrack_data will get 1 latest-position doc per ship (${TOTAL_SHIPS} total)`);
-
+    const now = new Date();
+    const startDate = new Date(now.getTime() - DAYS_BACK * 86400000);
+    const timeRangeMs = DAYS_BACK * 86400000;
+    
+    const totalBatches = Math.ceil(TOTAL_DOCS / BATCH_SIZE);
     let totalInserted = 0;
-    const ctrackLatest = []; // collect latest doc per ship for ctrack_data
     const startTime = Date.now();
-    const now = Date.now();
-    const intervalMs = TWO_MONTHS_MS / RECORDS_PER_SHIP;
 
-    for (let s = 0; s < ships.length; s++) {
-      const ship = ships[s];
+    for (let b = 0; b < totalBatches; b++) {
+      const batchStart = b * BATCH_SIZE;
+      const batchEnd   = Math.min(batchStart + BATCH_SIZE, TOTAL_DOCS);
+      const batchSize  = batchEnd - batchStart;
 
-      // Per-ship state for simulating gradual movement
-      let lat    = ship.lat;
-      let lng    = ship.lng;
-      let speed  = ship.speed;
-      let course = ship.course;
+      const tsDocs = [];
 
-      const shipBatches = Math.ceil(RECORDS_PER_SHIP / BATCH_SIZE);
-      let lastDoc = null;
+      for (let i = batchStart; i < batchEnd; i++) {
+        // Evenly distribute timestamps across the time range
+        const progressRatio = i / TOTAL_DOCS;
+        const timestamp = new Date(startDate.getTime() + progressRatio * timeRangeMs);
+        
+        // Cycle through ships
+        const shipIdx = i % ships.length;
+        const ship = ships[shipIdx];
 
-      for (let b = 0; b < shipBatches; b++) {
-        const recStart = b * BATCH_SIZE;
-        const recEnd   = Math.min(recStart + BATCH_SIZE, RECORDS_PER_SHIP);
-
-        const tsDocs = [];
-
-        for (let r = recStart; r < recEnd; r++) {
-          // Evenly distribute timestamps over last 2 months (oldest first)
-          const ts = new Date(now - TWO_MONTHS_MS + r * intervalMs);
-
-          // Simulate gradual drift in position, speed, course
-          lat    += randomFloat(-0.005, 0.005);
-          lng    += randomFloat(-0.005, 0.005);
-          lat     = Math.max(-85, Math.min(85, lat));
-          lng     = ((lng + 180) % 360 + 360) % 360 - 180; // wrap to [-180,180]
-          speed   = Math.max(0, Math.min(30, speed + randomFloat(-0.5, 0.5)));
-          course  = (course + randomInt(-5, 5) + 360) % 360;
-
-          // Update ship snapshot for doc generation
-          ship.lat    = lat;
-          ship.lng    = lng;
-          ship.speed  = speed;
-          ship.course = course;
-
-          const doc = generateCtrackDoc(ship, ts);
-          tsDocs.push(doc);
-          lastDoc = doc; // track the most recent record
-        }
-
-        const batchTime = Date.now();
-
-        // Write to timeseries only
-        await tsCol.insertMany(tsDocs, { ordered: false });
-
-        const batchDuration = Date.now() - batchTime;
-        totalInserted += tsDocs.length;
-        const pct  = ((totalInserted / totalRecords) * 100).toFixed(1);
-        const rate = Math.round(tsDocs.length / (batchDuration / 1000));
-
-        logger.info('SEED',
-          `Ship ${s+1}/${TOTAL_SHIPS} batch ${b+1}/${shipBatches} | ${totalInserted.toLocaleString()}/${totalRecords.toLocaleString()} (${pct}%) | ${rate.toLocaleString()} docs/sec`
-        );
+        const doc = generateTimeseriesDoc(ship, timestamp);
+        tsDocs.push(doc);
       }
 
-      // Keep latest doc for ctrack_data (1 per ship)
-      if (lastDoc) ctrackLatest.push({ ...lastDoc });
+      const batchTime = Date.now();
+
+      // Insert batch
+      await tsCol.insertMany(tsDocs, { ordered: false });
+
+      const batchDuration = Date.now() - batchTime;
+      totalInserted += batchSize;
+      const pct  = ((totalInserted / TOTAL_DOCS) * 100).toFixed(2);
+      const rate = Math.round(batchSize / (batchDuration / 1000));
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      const avgRate = Math.round(totalInserted / (elapsed || 1));
+
+      logger.info('SEED-TS',
+        `Batch ${b+1}/${totalBatches} | ${totalInserted.toLocaleString()}/${TOTAL_DOCS.toLocaleString()} (${pct}%) | ` +
+        `${rate.toLocaleString()} docs/sec (batch) | ${avgRate.toLocaleString()} docs/sec (avg)`
+      );
     }
 
-    // Insert latest positions into ctrack_data (1 doc per ship)
-    await ctrackCol.insertMany(ctrackLatest, { ordered: false });
-    logger.info('SEED', `Inserted ${ctrackLatest.length} latest-position docs into ctrack_data`);
+    const totalDuration = Date.now() - startTime;
+    const totalSeconds = totalDuration / 1000;
+    const finalRate = Math.round(TOTAL_DOCS / totalSeconds);
 
-    const totalDuration = ((Date.now() - startTime) / 1000).toFixed(1);
-    const avgRate = Math.round(totalInserted / parseFloat(totalDuration));
+    logger.info('SEED-TS', '═══════════════════════════════════════════');
+    logger.info('SEED-TS', `✓ Seeding complete!`);
+    logger.info('SEED-TS', `Total inserted: ${TOTAL_DOCS.toLocaleString()} documents`);
+    logger.info('SEED-TS', `Total time: ${Math.floor(totalSeconds / 60)}m ${Math.round(totalSeconds % 60)}s`);
+    logger.info('SEED-TS', `Average rate: ${finalRate.toLocaleString()} docs/sec`);
+    logger.info('SEED-TS', `Date range: ${startDate.toISOString()} to ${now.toISOString()}`);
+    logger.info('SEED-TS', '═══════════════════════════════════════════');
 
-    logger.info('SEED', '─── Seeding Complete ───');
-    logger.info('SEED', `  ship_tracking.ctrack_data    : ${ctrackLatest.length} docs (latest per ship)`);
-    logger.info('SEED', `  CTRACK.tracks_local_timeseries: ${totalInserted.toLocaleString()} entries`);
-    logger.info('SEED', `  Total time: ${totalDuration}s  |  Avg rate: ${avgRate.toLocaleString()} docs/sec`);
-  } catch (error) {
-    logger.error('SEED', 'Seeding failed:', error.message);
-    console.error(error);
-    process.exit(1);
-  } finally {
     await disconnect();
+
+  } catch (err) {
+    logger.error('SEED-TS', `Error: ${err.message}`, err);
+    await disconnect();
+    process.exit(1);
   }
 }
 
-seedData();
+seedTimeseriesLarge();
