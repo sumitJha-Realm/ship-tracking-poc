@@ -347,6 +347,29 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
             <label>Max Trail Points (map polyline)</label>
     <input type="number" id="ts-limit" value="5000" min="1" max="10000"/>
       </div>
+      <div class="form-group" style="background:rgba(0,212,255,.04);border:1px solid rgba(0,212,255,.12);border-radius:8px;padding:10px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+          <input type="checkbox" id="ts-dedupe" style="width:14px;height:14px;accent-color:#00d4ff"/>
+          <span style="color:#00d4ff;font-weight:600">Deduplicate similar positions</span>
+        </label>
+        <p style="color:#666;font-size:10px;margin:0 0 8px">Uses MongoDB <code style="color:#00d4ff">$setWindowFields</code> + <code style="color:#00d4ff">$derivative</code> to compute per-second rate of position change, then drops points where speed falls below the chosen threshold — removing anchored/stationary segments.</p>
+        <label style="font-size:11px">Min speed threshold (drop points below)</label>
+        <div style="display:flex;gap:3px;margin-top:6px;flex-wrap:wrap">
+          <button onclick="setMinSpeed(0.5)" class="tool-btn secondary" style="flex:1;padding:3px 0;font-size:10px;min-width:0" title="Drop only anchored/completely stopped">0.5 kn</button>
+          <button onclick="setMinSpeed(1)"   class="tool-btn secondary" style="flex:1;padding:3px 0;font-size:10px;min-width:0" title="Drop slow drift &amp; idle">1 kn</button>
+          <button onclick="setMinSpeed(3)"   class="tool-btn secondary" style="flex:1;padding:3px 0;font-size:10px;min-width:0" title="Keep maneuvering+steaming">3 kn</button>
+          <button onclick="setMinSpeed(5)"   class="tool-btn secondary" style="flex:1;padding:3px 0;font-size:10px;min-width:0" title="Keep steaming only">5 kn</button>
+          <button onclick="setMinSpeed(8)"   class="tool-btn secondary" style="flex:1;padding:3px 0;font-size:10px;min-width:0;border-color:#00d4ff" title="Keep full steaming only (good for demo data) ★">8 kn &#9733;</button>
+        </div>
+        <div style="display:flex;gap:3px;margin-top:3px;flex-wrap:wrap">
+          <button onclick="setMinSpeed(10)"  class="tool-btn secondary" style="flex:1;padding:3px 0;font-size:10px;min-width:0" title="Keep high-speed only">10 kn</button>
+          <button onclick="setMinSpeed(12)"  class="tool-btn secondary" style="flex:1;padding:3px 0;font-size:10px;min-width:0" title="Keep fast vessels only">12 kn</button>
+          <button onclick="setMinSpeed(15)"  class="tool-btn secondary" style="flex:1;padding:3px 0;font-size:10px;min-width:0" title="Keep high-speed transits">15 kn</button>
+          <button onclick="setMinSpeed(20)"  class="tool-btn secondary" style="flex:1;padding:3px 0;font-size:10px;min-width:0" title="Keep fastest segments only">20 kn</button>
+        </div>
+        <input type="hidden" id="ts-min-speed" value="8"/>
+        <p style="color:#555;font-size:10px;margin:6px 0 0">Threshold = (kn × 0.514) / 111000 °/s. Points with |d°lat/s|+|d°lng/s| below threshold are dropped. Seeded ships move at ~0–10 kn equivalent.</p>
+      </div>
       <button class="tool-btn" id="btn-run-history" style="width:100%">Search History</button>
       <p style="color:#555;font-size:10px;margin-top:6px;text-align:center">Server-side pagination — 20 rows per page. Click any row to pan map.</p>
       <div style="margin-top:8px">
@@ -1038,7 +1061,10 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
 
       try {
         // 1) Fetch trail coordinates for the map polyline (all points, minimal payload)
+        const dedupe = document.getElementById('ts-dedupe').checked;
+        const minSpeed = document.getElementById('ts-min-speed').value || '0.5';
         let trailUrl = API_BASE+'/tracks/'+encodeURIComponent(suid)+'/history?trail=1&limit='+limit;
+        if (dedupe) trailUrl += '&dedupe=1&min_speed='+minSpeed;
         if (from) trailUrl += '&time_from='+new Date(from).toISOString();
         if (to) trailUrl += '&time_to='+new Date(to).toISOString();
 
@@ -1059,7 +1085,7 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
         historyShipName = trailData.length > 0 ? (trailData[0].ship_name || suid) : suid;
 
         // Draw FULL trail on map (all points from trail endpoint)
-        drawFullTrail(trailData, suid);
+        drawFullTrail(trailData, suid, trailJson);
 
         // Render first page table
         renderHistoryPage();
@@ -1090,9 +1116,38 @@ html,body{width:100%;height:100%;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sa
       }
     }
 
-    function drawFullTrail(data, suid) {
+    function setMinSpeed(s) {
+      document.getElementById('ts-min-speed').value = s;
+      // Highlight active button
+      document.querySelectorAll('#panel-history .tool-btn.secondary[onclick^="setMinSpeed"]').forEach(b => {
+        const active = b.getAttribute('onclick').includes('('+s+')');
+        b.style.borderColor = active ? '#00d4ff' : '';
+        b.style.color       = active ? '#00d4ff' : '';
+      });
+    }
+    // Initialise highlight on default (8kn)
+    setMinSpeed(8);
+
+    function drawFullTrail(data, suid, meta) {
       historyTrailLayer.clearLayers();
       historyMarkerLayer.clearLayers();
+
+      // Show dedupe banner if applicable
+      const bannerEl = document.getElementById('trail-dedupe-banner');
+      if (bannerEl) bannerEl.remove();
+      if (meta && meta.deduped) {
+        const limit = document.getElementById('ts-limit').value || 5000;
+        const minSpeedKn = meta.min_speed_kn != null ? meta.min_speed_kn : '?';
+        const banner = document.createElement('div');
+        banner.id = 'trail-dedupe-banner';
+        banner.style.cssText = 'background:rgba(0,212,255,.08);border:1px solid rgba(0,212,255,.25);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#00d4ff';
+        banner.innerHTML = '<strong>$setWindowFields $derivative speed-dedupe active</strong> &mdash; ' +
+          'threshold <strong>' + minSpeedKn + ' kn</strong> &mdash; ' +
+          'showing <strong>' + data.length + '</strong> moving points from up to <strong>' + limit + '</strong> fetched &mdash; ' +
+          meta.query_time_ms + 'ms';
+        document.getElementById('history-results').prepend(banner);
+      }
+
       if (data.length === 0) return;
 
       const coords = data.filter(d => d.latitude && d.longitude).map(d => [d.latitude, d.longitude]);

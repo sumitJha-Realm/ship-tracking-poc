@@ -883,12 +883,70 @@ app.get('/tracks/:suid/history', async (req, res) => {
     if (trailMode) {
       // ── Trail mode: return only coordinates for the map polyline ──
       const trailLimit = Math.min(parseInt(req.query.limit) || 5000, 10000);
-      const data = await tsCol
-        .find(filter, { hint: 'idx_ts_suid_time', batchSize: Math.min(trailLimit, 1000) })
-        .sort({ reported_time_info: -1 })
-        .limit(trailLimit)
-        .project({ _id: 0, latitude: 1, longitude: 1, speed: 1, course: 1, reported_time_info: 1, ship_name: 1 })
-        .toArray();
+      const dedupeMode = req.query.dedupe === '1';
+      // min_speed: minimum speed in knots to keep a point (default 0.5 kn = anchored/stopped threshold)
+      // Converted to degrees/second: (kn * 0.514 m/s) / 111000 m/deg
+      const minSpeedKn = Math.max(parseFloat(req.query.min_speed) || 0.5, 0);
+      const threshold = (minSpeedKn * 0.514) / 111000;  // degrees/second
+
+      let data;
+
+      if (dedupeMode) {
+        // ── Derivative-based dedupe using $setWindowFields + $derivative ──────
+        // Strategy:
+        //   1. Fetch limit records sorted desc, then re-sort asc for forward-in-time derivatives
+        //   2. $setWindowFields/$derivative: compute rate of change of lat & lng per second
+        //      (uses a 2-document window: current + previous record)
+        //   3. $match: drop points where |dLat|+|dLng| < threshold (ship is stationary)
+        //      Keep the first point (null derivative — no predecessor) always
+        //   4. Re-sort descending for frontend trail rendering
+        //
+        // This removes truly stationary / anchored segments while preserving all movement,
+        // and is physically meaningful — filters by actual motion rather than grid proximity.
+        const pipeline = [
+          { $match: filter },
+          { $sort: { reported_time_info: -1 } },
+          { $limit: trailLimit },
+          // Re-sort ascending so $derivative measures forward-in-time rate of change
+          { $sort: { reported_time_info: 1 } },
+          // Step 1 — compute per-second rate of change for lat and lng
+          {
+            $setWindowFields: {
+              partitionBy: '$suid',
+              sortBy: { reported_time_info: 1 },
+              output: {
+                _dLat: { $derivative: { input: '$latitude',  unit: 'second' }, window: { documents: [-1, 0] } },
+                _dLng: { $derivative: { input: '$longitude', unit: 'second' }, window: { documents: [-1, 0] } },
+              }
+            }
+          },
+          // Step 2 — keep only moving points (or the first point whose derivative is null)
+          {
+            $match: {
+              $or: [
+                { _dLat: null },  // first document in partition — no predecessor
+                { $expr: { $gt: [
+                  { $add: [{ $abs: '$_dLat' }, { $abs: '$_dLng' }] },
+                  threshold
+                ]}}
+              ]
+            }
+          },
+          // Re-sort descending for frontend (newest-first)
+          { $sort: { reported_time_info: -1 } },
+          { $project: { _id: 0, latitude: 1, longitude: 1, speed: 1, course: 1, reported_time_info: 1, ship_name: 1 } }
+        ];
+
+        data = await tsCol.aggregate(pipeline, { allowDiskUse: true }).toArray();
+      } else {
+        data = await tsCol
+          .find(filter, { hint: 'idx_ts_suid_time', batchSize: Math.min(trailLimit, 1000) })
+          .sort({ reported_time_info: -1 })
+          .limit(trailLimit)
+          .project({ _id: 0, latitude: 1, longitude: 1, speed: 1, course: 1, reported_time_info: 1, ship_name: 1 })
+          .toArray();
+      }
+
       const duration = Date.now() - startTime;
 
       // Convert Long→number server-side
@@ -896,9 +954,10 @@ app.get('/tracks/:suid/history', async (req, res) => {
         if (data[i].course != null) data[i].course = toLongNum(data[i].course);
       }
 
-      logQuery({ endpoint: '/tracks/:suid/history?trail=1', collection: 'tracks_local_timeseries', operation: 'find+sort(trail)', query: filter, sort: { reported_time_info: -1 }, limit: trailLimit, projection: 'lat,lng,speed,course,time,name', duration_ms: duration, result_count: data.length, index_used: 'idx_ts_suid_time(hinted)' });
-      logger.info('API', `GET /tracks/${req.params.suid}/history?trail=1 - ${data.length} in ${duration}ms`);
-      return res.json({ success: true, trail: true, count: data.length, query_time_ms: duration, data });
+      const op = dedupeMode ? 'aggregate($setWindowFields/$derivative+$match speed-dedupe)' : 'find+sort(trail)';
+      logQuery({ endpoint: '/tracks/:suid/history?trail=1', collection: 'tracks_local_timeseries', operation: op, query: filter, sort: { reported_time_info: -1 }, limit: trailLimit, projection: 'lat,lng,speed,course,time,name', duration_ms: duration, result_count: data.length, index_used: 'idx_ts_suid_time' });
+      logger.info('API', `GET /tracks/${req.params.suid}/history?trail=1${dedupeMode?'&dedupe=1':''} - ${data.length} points in ${duration}ms${dedupeMode?' [derivative-dedupe min_speed='+minSpeedKn+'kn threshold='+threshold.toExponential(3)+'°/s]':''}`);
+      return res.json({ success: true, trail: true, deduped: dedupeMode, min_speed_kn: dedupeMode ? minSpeedKn : null, count: data.length, query_time_ms: duration, data });
     }
 
     // ── Paginated mode (default): return one page + total_count ──
