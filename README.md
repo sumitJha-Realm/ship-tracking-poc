@@ -237,6 +237,152 @@ db.ctrack_data.aggregate([
 ])
 ```
 
+### 5️⃣ Window Functions with `$setWindowFields`
+
+MongoDB's `$setWindowFields` stage enables analytics computations (ranking, running totals, moving averages) without pulling data to the application layer — similar to SQL `OVER(PARTITION BY ... ORDER BY ...)`.
+
+```javascript
+// Rank ships by speed within each nationality group
+db.ctrack_data.aggregate([
+  {
+    $setWindowFields: {
+      partitionBy: "$nationality",
+      sortBy: { speed: -1 },
+      output: {
+        speedRankInNationality: {
+          $rank: {}
+        }
+      }
+    }
+  }
+])
+
+// Moving average of speed over the last 5 reports per ship
+db.ctrack_data.aggregate([
+  {
+    $setWindowFields: {
+      partitionBy: "$mmsi_number",
+      sortBy: { reported_time_info: 1 },
+      output: {
+        avgSpeedLast5: {
+          $avg: "$speed",
+          window: { documents: [-4, 0] }
+        }
+      }
+    }
+  }
+])
+
+// Time-based window: count position reports per ship in 1-hour intervals
+db.ctrack_data.aggregate([
+  {
+    $setWindowFields: {
+      partitionBy: "$mmsi_number",
+      sortBy: { reported_time_info: 1 },
+      output: {
+        reportsInLastHour: {
+          $count: {},
+          window: { range: [-1, 0], unit: "hour" }
+        }
+      }
+    }
+  }
+])
+```
+
+### 6️⃣ Position Deduplication with `$derivative` Speed Filtering
+
+Uses `$setWindowFields` + `$derivative` to compute the per-second rate of position change, then drops points where the ship is stationary — removing anchored/idle segments while preserving all actual movement.
+
+**API Usage:**
+```bash
+# Fetch trail with speed-based deduplication (min 8 knots)
+curl "http://localhost:3000/tracks/{suid}/history?trail=1&dedupe=1&min_speed=8"
+```
+
+**Pipeline Logic:**
+```javascript
+db.tracks_local_timeseries.aggregate([
+  { $match: { suid: "SHIP_SUID" } },
+  { $sort: { reported_time_info: -1 } },
+  { $limit: 5000 },
+  // Re-sort ascending for forward-in-time derivatives
+  { $sort: { reported_time_info: 1 } },
+  // Step 1 — compute per-second rate of change for lat and lng
+  {
+    $setWindowFields: {
+      partitionBy: "$suid",
+      sortBy: { reported_time_info: 1 },
+      output: {
+        _dLat: { $derivative: { input: "$latitude", unit: "second" }, window: { documents: [-1, 0] } },
+        _dLng: { $derivative: { input: "$longitude", unit: "second" }, window: { documents: [-1, 0] } }
+      }
+    }
+  },
+  // Step 2 — keep only moving points (|dLat|+|dLng| > threshold)
+  {
+    $match: {
+      $or: [
+        { _dLat: null },  // first document (no predecessor)
+        { $expr: { $gt: [
+          { $add: [{ $abs: "$_dLat" }, { $abs: "$_dLng" }] },
+          0.0000370  // threshold = (8kn × 0.514 m/s) / 111000 m/deg
+        ]}}
+      ]
+    }
+  },
+  // Re-sort descending for frontend rendering
+  { $sort: { reported_time_info: -1 } },
+  { $project: { _id: 0, latitude: 1, longitude: 1, speed: 1, course: 1, reported_time_info: 1 } }
+])
+```
+
+**How it works:**
+- Converts knot threshold → degrees/second: `(kn × 0.514) / 111000`
+- `$derivative` computes rate of lat/lng change between consecutive records
+- Points where `|dLat| + |dLng|` falls below threshold are dropped (ship is stationary)
+- First point is always kept (null derivative — no predecessor)
+- Physically meaningful: filters by actual motion, not grid proximity
+
+**Threshold presets:**
+| Knots | Effect |
+|-------|--------|
+| 0.5 | Drop only anchored/stopped |
+| 1 | Drop slow drift & idle |
+| 3 | Keep maneuvering + steaming |
+| 5 | Keep steaming only |
+| 8 | Keep full steaming (recommended for demo) |
+| 10+ | Keep high-speed segments only |
+
+### 7️⃣ Speed Anomaly Detection
+
+Detect ships whose current speed deviates more than 2x from their rolling average:
+
+```javascript
+db.ctrack_data.aggregate([
+  {
+    $setWindowFields: {
+      partitionBy: "$mmsi_number",
+      sortBy: { reported_time_info: 1 },
+      output: {
+        rollingAvgSpeed: {
+          $avg: "$speed",
+          window: { documents: [-9, 0] }  // 10-report window
+        }
+      }
+    }
+  },
+  {
+    $addFields: {
+      speedAnomaly: {
+        $cond: [{ $gt: ["$speed", { $multiply: ["$rollingAvgSpeed", 2] }] }, true, false]
+      }
+    }
+  },
+  { $match: { speedAnomaly: true } }
+])
+```
+
 ## 📚 Documentation
 
 | File | Purpose |
