@@ -1,6 +1,6 @@
 {
   "name": "ship-tracking-poc",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "High-performance POC for migrating a maritime vessel tracking system from Oracle to MongoDB Atlas",
   "main": "src/api/server.js",
   "scripts": {

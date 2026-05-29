@@ -1,0 +1,6 @@
+# Vercel build ignore
+.git
+.gitignore
+node_modules
+.env.local
+.DS_Store
