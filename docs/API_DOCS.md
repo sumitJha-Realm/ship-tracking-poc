@@ -101,3 +101,52 @@ Toggle Track of Interest for the current user.
 Toggle remark flag for the current user.
 
 **Headers:** `x-user-id` (required)
+
+---
+
+### GET /wfs
+
+WFS 2.0-compatible endpoint backed by MongoDB time-series collection `tracks_local_timeseries`.
+
+**Supported operations:**
+- `GetCapabilities`
+- `DescribeFeatureType`
+- `GetFeature`
+
+**Common query parameters for GetFeature:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| service | string | Must be `WFS` |
+| request | string | `GetFeature` |
+| typeNames | string | `ship_tracking:tracks_local_timeseries` |
+| bbox | string | `minx,miny,maxx,maxy` (CRS84 lon/lat) |
+| datetime | string | ISO instant or interval (`from/to`) |
+| suid | string | Filter by ship identifier |
+| nationality | number | Filter by nationality code |
+| count | number | Max features to return |
+| startIndex | number | Pagination offset |
+| view | string | `history` (default) or `latest` (one feature per `suid`) |
+| cql_filter | string | Basic CQL with `AND` and operators `= != > >= < <=` |
+| outputFormat | string | `application/json` for GeoJSON-like output, XML by default |
+
+**Examples:**
+```bash
+# Capabilities
+curl "http://localhost:3000/wfs?service=WFS&request=GetCapabilities"
+
+# Feature schema
+curl "http://localhost:3000/wfs?service=WFS&request=DescribeFeatureType&typeNames=ship_tracking:tracks_local_timeseries"
+
+# Latest features in JSON
+curl "http://localhost:3000/wfs?service=WFS&request=GetFeature&typeNames=ship_tracking:tracks_local_timeseries&count=100&outputFormat=application/json"
+
+# Latest per ship (one feature per suid)
+curl "http://localhost:3000/wfs?service=WFS&request=GetFeature&typeNames=ship_tracking:tracks_local_timeseries&view=latest&count=200&outputFormat=application/json"
+
+# Spatial + temporal filter
+curl "http://localhost:3000/wfs?service=WFS&request=GetFeature&typeNames=ship_tracking:tracks_local_timeseries&bbox=50,-30,90,10&datetime=2026-01-01T00:00:00Z/..&count=500"
+
+# CQL filter (AND-only basic parser)
+curl "http://localhost:3000/wfs?service=WFS&request=GetFeature&typeNames=ship_tracking:tracks_local_timeseries&cql_filter=nationality%3D273%20AND%20speed%3E10&outputFormat=application/json"
+```

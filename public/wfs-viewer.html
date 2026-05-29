@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WFS Explorer - Ship Tracking POC</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    :root {
+      --bg: #0c1224;
+      --panel: #121b33;
+      --panel-2: #0f1730;
+      --accent: #2dd4bf;
+      --accent-2: #38bdf8;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --border: #253152;
+      --danger: #f97316;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: radial-gradient(circle at top right, #1f2a4f 0%, var(--bg) 45%); color: var(--text); font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif; }
+    .shell { max-width: 1280px; margin: 0 auto; padding: 24px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+    .title h1 { margin: 0; font-size: 24px; letter-spacing: 0.3px; }
+    .title p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    .links { display: flex; gap: 10px; }
+    .links a { text-decoration: none; color: var(--text); border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px; font-size: 12px; background: rgba(255,255,255,0.03); }
+    .grid { display: grid; grid-template-columns: 380px 1fr; gap: 14px; }
+    .panel { background: linear-gradient(180deg, var(--panel), var(--panel-2)); border: 1px solid var(--border); border-radius: 12px; padding: 14px; box-shadow: 0 8px 30px rgba(0,0,0,0.25); }
+    .panel h2 { margin: 0 0 10px; font-size: 14px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.7px; }
+    .field { margin-bottom: 10px; }
+    .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; }
+    .field input, .field select, .field textarea {
+      width: 100%; padding: 9px 10px; border-radius: 8px; border: 1px solid #30416e; background: #0c1530; color: var(--text); font-size: 13px; outline: none;
+    }
+    .field textarea { min-height: 72px; resize: vertical; }
+    .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+    button {
+      border: none; border-radius: 8px; padding: 10px 12px; font-weight: 700; color: white; cursor: pointer;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2)); font-size: 12px;
+    }
+    button.secondary { background: #26355d; color: var(--text); }
+    button.warn { background: linear-gradient(135deg, var(--danger), #ef4444); }
+    .status { font-size: 12px; color: var(--muted); margin-top: 10px; min-height: 16px; }
+    .output-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip { font-size: 11px; color: #d1fae5; border: 1px solid #1f6f64; background: rgba(45, 212, 191, 0.12); border-radius: 999px; padding: 4px 8px; }
+    .codebox {
+      width: 100%; min-height: 590px; max-height: 70vh; overflow: auto; background: #080f24; border: 1px solid #253961; border-radius: 10px;
+      padding: 12px; font-family: SFMono-Regular, Menlo, Consolas, "Courier New", monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap;
+    }
+    .preview-wrap { margin-bottom: 10px; }
+    .preview-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .preview-head .lbl { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .preview-head .meta { font-size: 11px; color: #cbd5e1; }
+    #previewMap { width: 100%; height: 280px; border: 1px solid #253961; border-radius: 10px; background: #0a1228; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .legend-item { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted); }
+    .legend-dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.3); }
+    .mini { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; font-size: 12px; color: var(--muted); }
+    @media (max-width: 1024px) {
+      .grid { grid-template-columns: 1fr; }
+      .codebox { min-height: 360px; }
+      #previewMap { height: 230px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="topbar">
+      <div class="title">
+        <h1>WFS Explorer</h1>
+        <p>Live tester for /wfs endpoint backed by MongoDB time-series collection tracks_local_timeseries.</p>
+      </div>
+      <div class="links">
+        <a href="/ship-map-viewer.html">Map Viewer</a>
+        <a href="/wfs?service=WFS&request=GetCapabilities" target="_blank" rel="noopener noreferrer">Open Raw Capabilities</a>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <h2>Request Builder</h2>
+
+        <div class="field">
+          <label>Operation</label>
+          <select id="requestType">
+            <option value="GetCapabilities">GetCapabilities</option>
+            <option value="DescribeFeatureType">DescribeFeatureType</option>
+            <option value="GetFeature" selected>GetFeature</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>View Mode</label>
+          <select id="viewMode">
+            <option value="history" selected>history (all matching events)</option>
+            <option value="latest">latest (one feature per suid)</option>
+          </select>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>count</label>
+            <input id="count" type="number" min="1" max="50000" value="100" />
+          </div>
+          <div class="field">
+            <label>startIndex</label>
+            <input id="startIndex" type="number" min="0" value="0" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>bbox (minx,miny,maxx,maxy)</label>
+          <input id="bbox" placeholder="example: 50,-30,90,10" />
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label>suid</label>
+            <input id="suid" placeholder="optional" />
+          </div>
+          <div class="field">
+            <label>nationality</label>
+            <input id="nationality" type="number" placeholder="optional" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>datetime (ISO or interval)</label>
+          <input id="datetime" placeholder="2026-01-01T00:00:00Z/.." />
+        </div>
+
+        <div class="field">
+          <label>cql_filter (AND-only basic parser)</label>
+          <textarea id="cql" placeholder="nationality=273 AND speed>10"></textarea>
+        </div>
+
+        <div class="field">
+          <label>outputFormat</label>
+          <select id="outputFormat">
+            <option value="application/json" selected>application/json</option>
+            <option value="application/gml+xml; version=3.2">application/gml+xml; version=3.2</option>
+          </select>
+        </div>
+
+        <div class="btns">
+          <button id="btnRun">Run Request</button>
+          <button id="btnCopy" class="secondary">Copy URL</button>
+          <button id="btnCapabilities" class="secondary">GetCapabilities</button>
+          <button id="btnClear" class="warn">Clear Output</button>
+        </div>
+
+        <div class="status" id="status">Ready.</div>
+
+        <div class="mini">
+          Tip: switch to latest view for one feature per ship (best for map layers).
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="output-head">
+          <h2 style="margin:0">Response</h2>
+          <div class="chips">
+            <span class="chip" id="chipCode">status: -</span>
+            <span class="chip" id="chipType">type: -</span>
+            <span class="chip" id="chipCount">count: -</span>
+            <span class="chip" id="chipTime">time: -</span>
+          </div>
+        </div>
+        <div class="preview-wrap">
+          <div class="preview-head">
+            <span class="lbl">Map Preview</span>
+            <span class="meta" id="previewMeta">No plotted features.</span>
+          </div>
+          <div id="previewMap"></div>
+          <div class="legend" id="previewLegend"></div>
+        </div>
+        <div class="codebox" id="output">Run a request to see data here...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const PREVIEW_POINT_LIMIT = 2000;
+    const NATIONALITY_COLORS = {
+      273: '#FF0000',
+      419: '#e4e901',
+      501: '#00FF00',
+      502: '#FF8C00',
+      503: '#1E90FF',
+      504: '#800080',
+      505: '#00CED1',
+      506: '#FF69B4',
+      508: '#8B4513',
+      510: '#4682B4',
+      511: '#32CD32',
+      512: '#DC143C',
+      514: '#FF4500',
+      515: '#4169E1',
+      516: '#2E8B57',
+      518: '#DAA520',
+      519: '#9370DB',
+      520: '#20B2AA',
+      538: '#F0E68C',
+    };
+    const els = {
+      requestType: document.getElementById('requestType'),
+      viewMode: document.getElementById('viewMode'),
+      count: document.getElementById('count'),
+      startIndex: document.getElementById('startIndex'),
+      bbox: document.getElementById('bbox'),
+      suid: document.getElementById('suid'),
+      nationality: document.getElementById('nationality'),
+      datetime: document.getElementById('datetime'),
+      cql: document.getElementById('cql'),
+      outputFormat: document.getElementById('outputFormat'),
+      output: document.getElementById('output'),
+      status: document.getElementById('status'),
+      chipCode: document.getElementById('chipCode'),
+      chipType: document.getElementById('chipType'),
+      chipCount: document.getElementById('chipCount'),
+      chipTime: document.getElementById('chipTime'),
+      previewMeta: document.getElementById('previewMeta'),
+      previewLegend: document.getElementById('previewLegend'),
+    };
+
+    const previewMap = L.map('previewMap', { zoomControl: true }).setView([10, 60], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 18,
+    }).addTo(previewMap);
+
+    const previewLayer = L.layerGroup().addTo(previewMap);
+    window.__wfsPreview = { map: previewMap, layer: previewLayer };
+
+    function renderLegend(items) {
+      els.previewLegend.innerHTML = '';
+      const sorted = Array.from(items).sort((a, b) => a - b);
+      sorted.slice(0, 12).forEach((nat) => {
+        const item = document.createElement('span');
+        item.className = 'legend-item';
+
+        const dot = document.createElement('span');
+        dot.className = 'legend-dot';
+        dot.style.background = NATIONALITY_COLORS[nat] || '#FFFFFF';
+
+        const txt = document.createElement('span');
+        txt.textContent = `NAT ${nat}`;
+
+        item.appendChild(dot);
+        item.appendChild(txt);
+        els.previewLegend.appendChild(item);
+      });
+    }
+
+    function clearPreviewMap() {
+      previewLayer.clearLayers();
+      els.previewMeta.textContent = 'No plotted features.';
+      els.previewLegend.innerHTML = '';
+    }
+
+    function renderPreview(data) {
+      clearPreviewMap();
+      if (!data || !Array.isArray(data.features)) return;
+
+      const toPlot = data.features.slice(0, PREVIEW_POINT_LIMIT);
+      const bounds = [];
+      const seenNationalities = new Set();
+
+      toPlot.forEach((f) => {
+        const p = f.properties || {};
+        const coords = f && f.geometry && Array.isArray(f.geometry.coordinates) ? f.geometry.coordinates : null;
+        if (!coords || coords.length < 2) return;
+
+        const lng = Number(coords[0]);
+        const lat = Number(coords[1]);
+        if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+
+        bounds.push([lat, lng]);
+        const nat = Number(p.nationality);
+        if (Number.isFinite(nat)) seenNationalities.add(nat);
+        const fill = NATIONALITY_COLORS[nat] || '#FFFFFF';
+        const marker = L.circleMarker([lat, lng], {
+          radius: 4,
+          color: '#0f172a',
+          weight: 1,
+          fillColor: fill,
+          fillOpacity: 0.8,
+        });
+        marker.bindPopup(
+          `<b>${p.ship_name || p.suid || 'Ship'}</b><br>` +
+          `SUID: ${p.suid || '-'}<br>` +
+          `Nationality: ${p.nationality ?? '-'}<br>` +
+          `Speed: ${p.speed ?? '-'}<br>` +
+          `Reported: ${p.reported_time_info || '-'}`
+        );
+        marker.addTo(previewLayer);
+      });
+
+      if (bounds.length > 0) {
+        previewMap.fitBounds(bounds, { padding: [20, 20], maxZoom: 7 });
+      }
+      renderLegend(seenNationalities);
+
+      const total = data.features.length;
+      const plotted = Math.min(total, PREVIEW_POINT_LIMIT);
+      els.previewMeta.textContent = plotted < total
+        ? `Plotted ${plotted}/${total} features (preview limit).`
+        : `Plotted ${plotted} features.`;
+    }
+
+    function buildUrl(overrideRequest) {
+      const qs = new URLSearchParams();
+      const reqType = overrideRequest || els.requestType.value;
+
+      qs.set('service', 'WFS');
+      qs.set('request', reqType);
+
+      if (reqType === 'DescribeFeatureType' || reqType === 'GetFeature') {
+        qs.set('typeNames', 'ship_tracking:tracks_local_timeseries');
+      }
+
+      if (reqType === 'GetFeature') {
+        qs.set('view', els.viewMode.value);
+        qs.set('count', String(els.count.value || 100));
+        qs.set('startIndex', String(els.startIndex.value || 0));
+        qs.set('outputFormat', els.outputFormat.value);
+
+        if (els.bbox.value.trim()) qs.set('bbox', els.bbox.value.trim());
+        if (els.suid.value.trim()) qs.set('suid', els.suid.value.trim());
+        if (els.nationality.value.trim()) qs.set('nationality', els.nationality.value.trim());
+        if (els.datetime.value.trim()) qs.set('datetime', els.datetime.value.trim());
+        if (els.cql.value.trim()) qs.set('cql_filter', els.cql.value.trim());
+      }
+
+      return `/wfs?${qs.toString()}`;
+    }
+
+    async function run(overrideRequest) {
+      const started = performance.now();
+      const url = buildUrl(overrideRequest);
+
+      els.status.textContent = `Running: ${url}`;
+      els.output.textContent = 'Loading...';
+
+      try {
+        const res = await fetch(url);
+        const ms = Math.round(performance.now() - started);
+        const contentType = res.headers.get('content-type') || '';
+
+        els.chipCode.textContent = `status: ${res.status}`;
+        els.chipType.textContent = `type: ${contentType || '-'}`;
+        els.chipTime.textContent = `time: ${ms}ms`;
+
+        if (contentType.includes('application/json')) {
+          const data = await res.json();
+          const featureCount = Array.isArray(data.features) ? data.features.length : (data.count || 0);
+          els.chipCount.textContent = `count: ${featureCount}`;
+          els.output.textContent = JSON.stringify(data, null, 2);
+          renderPreview(data);
+        } else {
+          const txt = await res.text();
+          const members = (txt.match(/<wfs:member>/g) || []).length;
+          els.chipCount.textContent = `count: ${members}`;
+          els.output.textContent = txt;
+          clearPreviewMap();
+        }
+
+        els.status.textContent = `Completed in ${ms}ms`;
+      } catch (err) {
+        els.chipCode.textContent = 'status: error';
+        els.chipType.textContent = 'type: -';
+        els.chipCount.textContent = 'count: -';
+        els.chipTime.textContent = 'time: -';
+        els.output.textContent = String(err && err.stack ? err.stack : err);
+        clearPreviewMap();
+        els.status.textContent = 'Request failed.';
+      }
+    }
+
+    document.getElementById('btnRun').addEventListener('click', () => run());
+    document.getElementById('btnCapabilities').addEventListener('click', () => run('GetCapabilities'));
+    document.getElementById('btnCopy').addEventListener('click', async () => {
+      const full = `${location.origin}${buildUrl()}`;
+      try {
+        await navigator.clipboard.writeText(full);
+        els.status.textContent = `Copied URL: ${full}`;
+      } catch (e) {
+        els.status.textContent = `Copy failed. URL: ${full}`;
+      }
+    });
+    document.getElementById('btnClear').addEventListener('click', () => {
+      els.output.textContent = 'Output cleared.';
+      els.status.textContent = 'Ready.';
+      els.chipCode.textContent = 'status: -';
+      els.chipType.textContent = 'type: -';
+      els.chipCount.textContent = 'count: -';
+      els.chipTime.textContent = 'time: -';
+      clearPreviewMap();
+    });
+
+    run();
+  </script>
+</body>
+</html>

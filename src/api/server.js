@@ -849,6 +849,408 @@ app.get('/feed/geojson', async (req, res) => {
   }
 });
 
+// ─── GET /wfs ───────────────────────────────────────────────────────
+// Lightweight WFS 2.0-compatible endpoint backed by timeseries data.
+// Supported operations: GetCapabilities, DescribeFeatureType, GetFeature
+const WFS_VERSION = '2.0.0';
+const WFS_TYPENAME = 'ship_tracking:tracks_local_timeseries';
+
+function xmlEscape(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function parseBbox(bboxStr) {
+  if (!bboxStr) return null;
+  const nums = String(bboxStr).split(',').slice(0, 4).map(v => parseFloat(v.trim()));
+  if (nums.length < 4 || nums.some(Number.isNaN)) return null;
+  const [minx, miny, maxx, maxy] = nums;
+  return {
+    minx,
+    miny,
+    maxx,
+    maxy,
+    polygon: {
+      type: 'Polygon',
+      coordinates: [[[minx, miny], [minx, maxy], [maxx, maxy], [maxx, miny], [minx, miny]]],
+    },
+  };
+}
+
+function parseDateTimeFilter(datetimeStr) {
+  if (!datetimeStr) return null;
+  const raw = String(datetimeStr).trim();
+  if (!raw) return null;
+
+  if (!raw.includes('/')) {
+    const single = new Date(raw);
+    if (Number.isNaN(single.getTime())) return null;
+    return { $eq: single };
+  }
+
+  const [fromRaw, toRaw] = raw.split('/');
+  const out = {};
+
+  if (fromRaw && fromRaw !== '..') {
+    const from = new Date(fromRaw);
+    if (!Number.isNaN(from.getTime())) out.$gte = from;
+  }
+
+  if (toRaw && toRaw !== '..') {
+    const to = new Date(toRaw);
+    if (!Number.isNaN(to.getTime())) out.$lte = to;
+  }
+
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+function parseCqlValue(raw) {
+  const v = String(raw).trim();
+  if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
+    return v.slice(1, -1);
+  }
+  if (/^-?\d+(\.\d+)?$/.test(v)) {
+    return Number(v);
+  }
+  if (/^(true|false)$/i.test(v)) {
+    return /^true$/i.test(v);
+  }
+  if (/^\d{4}-\d{2}-\d{2}T/.test(v)) {
+    const d = new Date(v);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+  return v;
+}
+
+function parseSimpleCqlFilter(cqlFilter) {
+  if (!cqlFilter) return null;
+
+  const allowedFields = new Set([
+    'suid',
+    'nationality',
+    'mmsi_number',
+    'speed',
+    'course',
+    'reported_time_info',
+  ]);
+
+  const opMap = {
+    '=': '$eq',
+    '!=': '$ne',
+    '>': '$gt',
+    '>=': '$gte',
+    '<': '$lt',
+    '<=': '$lte',
+  };
+
+  const parts = String(cqlFilter).split(/\s+AND\s+/i).map(s => s.trim()).filter(Boolean);
+  if (parts.length === 0) return null;
+
+  const match = {};
+
+  for (const part of parts) {
+    const m = part.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*(=|!=|>=|<=|>|<)\s*(.+)$/);
+    if (!m) continue;
+
+    const field = m[1];
+    const op = m[2];
+    const rawValue = m[3];
+    if (!allowedFields.has(field)) continue;
+
+    const value = parseCqlValue(rawValue);
+    const mongoOp = opMap[op] || '$eq';
+
+    if (mongoOp === '$eq') {
+      match[field] = value;
+    } else {
+      if (!match[field] || typeof match[field] !== 'object' || Array.isArray(match[field])) {
+        match[field] = {};
+      }
+      match[field][mongoOp] = value;
+    }
+  }
+
+  return Object.keys(match).length > 0 ? match : null;
+}
+
+function formatWfsFeatureCollectionXml(features, matched, returned, timestamp) {
+  const members = features.map(f => {
+    const lon = f.geometry?.coordinates?.[0] ?? 0;
+    const lat = f.geometry?.coordinates?.[1] ?? 0;
+    const p = f.properties || {};
+    return `\n    <wfs:member>
+      <ship_tracking:tracks_local_timeseries>
+        <ship_tracking:suid>${xmlEscape(p.suid || '')}</ship_tracking:suid>
+        <ship_tracking:ship_name>${xmlEscape(p.ship_name || '')}</ship_tracking:ship_name>
+        <ship_tracking:mmsi_number>${xmlEscape(p.mmsi_number ?? '')}</ship_tracking:mmsi_number>
+        <ship_tracking:nationality>${xmlEscape(p.nationality ?? '')}</ship_tracking:nationality>
+        <ship_tracking:speed>${xmlEscape(p.speed ?? '')}</ship_tracking:speed>
+        <ship_tracking:course>${xmlEscape(p.course ?? '')}</ship_tracking:course>
+        <ship_tracking:reported_time_info>${xmlEscape(p.reported_time_info || '')}</ship_tracking:reported_time_info>
+        <ship_tracking:trackLocation>
+          <gml:Point srsName="urn:ogc:def:crs:OGC::CRS84">
+            <gml:pos>${xmlEscape(lat)} ${xmlEscape(lon)}</gml:pos>
+          </gml:Point>
+        </ship_tracking:trackLocation>
+      </ship_tracking:tracks_local_timeseries>
+    </wfs:member>`;
+  }).join('');
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<wfs:FeatureCollection
+  xmlns:wfs="http://www.opengis.net/wfs/2.0"
+  xmlns:gml="http://www.opengis.net/gml/3.2"
+  xmlns:ship_tracking="http://ship-tracking-poc.local/ship_tracking"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  numberMatched="${xmlEscape(matched)}"
+  numberReturned="${xmlEscape(returned)}"
+  timeStamp="${xmlEscape(timestamp)}"
+  xsi:schemaLocation="http://www.opengis.net/wfs/2.0 http://schemas.opengis.net/wfs/2.0/wfs.xsd">
+  ${members}
+</wfs:FeatureCollection>`;
+}
+
+app.get('/wfs', async (req, res) => {
+  try {
+    const service = String(req.query.service || 'WFS').toUpperCase();
+    const requestType = String(req.query.request || 'GetCapabilities').toUpperCase();
+    const outputFormat = String(req.query.outputFormat || '').toLowerCase();
+
+    if (service !== 'WFS') {
+      return res.status(400).json({
+        success: false,
+        error: 'Only service=WFS is supported',
+      });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}${req.path}`;
+
+    if (requestType === 'GETCAPABILITIES') {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<wfs:WFS_Capabilities
+  xmlns:wfs="http://www.opengis.net/wfs/2.0"
+  xmlns:ows="http://www.opengis.net/ows/1.1"
+  xmlns:gml="http://www.opengis.net/gml/3.2"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  version="${WFS_VERSION}"
+  xsi:schemaLocation="http://www.opengis.net/wfs/2.0 http://schemas.opengis.net/wfs/2.0/wfs.xsd">
+  <ows:ServiceIdentification>
+    <ows:Title>Ship Tracking WFS</ows:Title>
+    <ows:Abstract>WFS endpoint backed by MongoDB time-series collection tracks_local_timeseries</ows:Abstract>
+    <ows:ServiceType>WFS</ows:ServiceType>
+    <ows:ServiceTypeVersion>${WFS_VERSION}</ows:ServiceTypeVersion>
+  </ows:ServiceIdentification>
+  <ows:OperationsMetadata>
+    <ows:Operation name="GetCapabilities"><ows:DCP><ows:HTTP><ows:Get xlink:href="${xmlEscape(baseUrl)}"/></ows:HTTP></ows:DCP></ows:Operation>
+    <ows:Operation name="DescribeFeatureType"><ows:DCP><ows:HTTP><ows:Get xlink:href="${xmlEscape(baseUrl)}"/></ows:HTTP></ows:DCP></ows:Operation>
+    <ows:Operation name="GetFeature"><ows:DCP><ows:HTTP><ows:Get xlink:href="${xmlEscape(baseUrl)}"/></ows:HTTP></ows:DCP></ows:Operation>
+  </ows:OperationsMetadata>
+  <wfs:FeatureTypeList>
+    <wfs:FeatureType>
+      <wfs:Name>${WFS_TYPENAME}</wfs:Name>
+      <wfs:Title>Ship Track History</wfs:Title>
+      <wfs:DefaultCRS>urn:ogc:def:crs:OGC::CRS84</wfs:DefaultCRS>
+      <wfs:OutputFormats>
+        <wfs:Format>application/gml+xml; version=3.2</wfs:Format>
+        <wfs:Format>application/json</wfs:Format>
+      </wfs:OutputFormats>
+    </wfs:FeatureType>
+  </wfs:FeatureTypeList>
+</wfs:WFS_Capabilities>`;
+
+      res.type('application/xml').send(xml);
+      return;
+    }
+
+    if (requestType === 'DESCRIBEFEATURETYPE') {
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  xmlns:gml="http://www.opengis.net/gml/3.2"
+  xmlns:ship_tracking="http://ship-tracking-poc.local/ship_tracking"
+  targetNamespace="http://ship-tracking-poc.local/ship_tracking"
+  elementFormDefault="qualified"
+  version="1.0">
+  <xsd:import namespace="http://www.opengis.net/gml/3.2" schemaLocation="http://schemas.opengis.net/gml/3.2.1/gml.xsd"/>
+  <xsd:complexType name="tracks_local_timeseriesType">
+    <xsd:complexContent>
+      <xsd:extension base="gml:AbstractFeatureType">
+        <xsd:sequence>
+          <xsd:element name="suid" type="xsd:string" minOccurs="0"/>
+          <xsd:element name="ship_name" type="xsd:string" minOccurs="0"/>
+          <xsd:element name="mmsi_number" type="xsd:string" minOccurs="0"/>
+          <xsd:element name="nationality" type="xsd:int" minOccurs="0"/>
+          <xsd:element name="speed" type="xsd:double" minOccurs="0"/>
+          <xsd:element name="course" type="xsd:double" minOccurs="0"/>
+          <xsd:element name="reported_time_info" type="xsd:dateTime" minOccurs="0"/>
+          <xsd:element name="trackLocation" type="gml:PointPropertyType" minOccurs="0"/>
+        </xsd:sequence>
+      </xsd:extension>
+    </xsd:complexContent>
+  </xsd:complexType>
+  <xsd:element name="tracks_local_timeseries" type="ship_tracking:tracks_local_timeseriesType" substitutionGroup="gml:AbstractFeature"/>
+</xsd:schema>`;
+
+      res.type('application/xml').send(xml);
+      return;
+    }
+
+    if (requestType === 'GETFEATURE') {
+      const typeNames = String(req.query.typeNames || req.query.typenames || WFS_TYPENAME);
+      if (typeNames !== WFS_TYPENAME) {
+        return res.status(400).json({
+          success: false,
+          error: `Only typeNames=${WFS_TYPENAME} is supported`,
+        });
+      }
+
+      const tsCol = await getTimeseriesCollection();
+      const count = Math.min(Math.max(parseInt(req.query.count) || parseInt(req.query.maxFeatures) || 1000, 1), 50000);
+      const startIndex = Math.max(parseInt(req.query.startIndex) || 0, 0);
+      const viewMode = String(req.query.view || 'history').toLowerCase();
+
+      const match = {};
+      const suid = req.query.suid ? String(req.query.suid) : null;
+      const nationality = req.query.nationality ? parseInt(req.query.nationality) : null;
+      const bbox = parseBbox(req.query.bbox);
+      const dt = parseDateTimeFilter(req.query.datetime);
+      const cql = parseSimpleCqlFilter(req.query.cql_filter || req.query.CQL_FILTER);
+
+      if (suid) match.suid = suid;
+      if (!Number.isNaN(nationality) && nationality != null) match.nationality = nationality;
+      if (bbox) match.trackLocation = { $geoWithin: { $geometry: bbox.polygon } };
+      if (dt) match.reported_time_info = dt;
+      if (cql) {
+        Object.keys(cql).forEach(k => {
+          match[k] = cql[k];
+        });
+      }
+
+      const start = Date.now();
+
+      const projectionStage = {
+        $project: {
+          _id: 0,
+          suid: 1,
+          ship_name: 1,
+          mmsi_number: 1,
+          nationality: 1,
+          speed: 1,
+          course: 1,
+          reported_time_info: 1,
+          latitude: 1,
+          longitude: 1,
+          trackLocation: 1,
+        },
+      };
+
+      let matched = 0;
+      let docs = [];
+
+      if (viewMode === 'latest') {
+        const countPipeline = [
+          { $match: match },
+          { $sort: { suid: 1, reported_time_info: -1 } },
+          { $group: { _id: '$suid', latest: { $first: '$$ROOT' } } },
+          { $count: 'count' },
+        ];
+
+        const dataPipeline = [
+          { $match: match },
+          { $sort: { suid: 1, reported_time_info: -1 } },
+          { $group: { _id: '$suid', latest: { $first: '$$ROOT' } } },
+          { $replaceRoot: { newRoot: '$latest' } },
+          { $sort: { reported_time_info: -1 } },
+          { $skip: startIndex },
+          { $limit: count },
+          projectionStage,
+        ];
+
+        const [countRows, latestRows] = await Promise.all([
+          tsCol.aggregate(countPipeline).toArray(),
+          tsCol.aggregate(dataPipeline).toArray(),
+        ]);
+
+        matched = countRows[0]?.count || 0;
+        docs = latestRows;
+      } else {
+        const [countRows, histRows] = await Promise.all([
+          tsCol.countDocuments(match),
+          tsCol.aggregate([
+            { $match: match },
+            { $sort: { reported_time_info: -1 } },
+            { $skip: startIndex },
+            { $limit: count },
+            projectionStage,
+          ]).toArray(),
+        ]);
+
+        matched = countRows;
+        docs = histRows;
+      }
+
+      const features = docs.map(doc => {
+        const lon = doc.trackLocation?.coordinates?.[0] ?? doc.longitude ?? 0;
+        const lat = doc.trackLocation?.coordinates?.[1] ?? doc.latitude ?? 0;
+
+        return {
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [lon, lat] },
+          properties: {
+            suid: doc.suid,
+            ship_name: doc.ship_name,
+            mmsi_number: toLongNum(doc.mmsi_number),
+            nationality: toLongNum(doc.nationality),
+            speed: doc.speed,
+            course: toLongNum(doc.course),
+            reported_time_info: doc.reported_time_info ? new Date(doc.reported_time_info).toISOString() : null,
+          },
+        };
+      });
+
+      const duration = Date.now() - start;
+      logQuery({
+        endpoint: '/wfs?request=GetFeature',
+        collection: 'tracks_local_timeseries',
+        operation: viewMode === 'latest' ? 'aggregate(wfs-getfeature-latest)' : 'aggregate(wfs-getfeature-history)',
+        query: match,
+        sort: { reported_time_info: -1 },
+        limit: count,
+        skip: startIndex,
+        duration_ms: duration,
+        result_count: features.length,
+        index_used: bbox ? 'idx_ts_trackLocation_2dsphere (+ time sort)' : 'idx_ts_suid_time',
+      });
+
+      if (outputFormat.includes('json') || outputFormat.includes('geojson')) {
+        return res.json({
+          type: 'FeatureCollection',
+          features,
+          numberMatched: matched,
+          numberReturned: features.length,
+          timeStamp: new Date().toISOString(),
+        });
+      }
+
+      const xml = formatWfsFeatureCollectionXml(features, matched, features.length, new Date().toISOString());
+      return res.type('application/xml').send(xml);
+    }
+
+    return res.status(400).json({
+      success: false,
+      error: 'Unsupported WFS request. Supported: GetCapabilities, DescribeFeatureType, GetFeature',
+    });
+  } catch (error) {
+    logger.error('API', 'GET /wfs failed:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ─── GET /tracks/:suid/history ───────────────────────────────────────
 // Get historical CTRACK entries from timeseries — SERVER-SIDE PAGINATION
 //
@@ -1547,6 +1949,7 @@ async function start() {
       logger.info('API', `  GET  /api/performance`);
       logger.info('API', `  GET  /api/query-log?since=0`);
       logger.info('API', `  GET  /feed/geojson`);
+      logger.info('API', `  GET  /wfs?service=WFS&request=GetCapabilities`);
       logger.info('API', `  GET  /api/analytics/:suid`);
       logger.info('API', `  GET  /api/analytics/fleet/summary`);
       logger.info('API', `  GET  /api/doc-count?days=7`);
