@@ -1,0 +1,938 @@
+# Technical Report: Timeseries Hot/Cold Data Tiering — On-Premise Deployment
+
+**Document Type:** Technical Strategy & Architecture Report  
+**Subject:** Ship Tracking Timeseries Data — Hot/Cold Storage Tiering  
+**Scope:** On-Premise Infrastructure  
+**Data Retention:** Hot: 1 Year | Cold: 5 Years  
+
+---
+
+## 1. Introduction
+
+### 1.1 Problem Statement
+
+Ship tracking systems continuously ingest AIS (Automatic Identification System) position reports at high frequency. Over multi-year retention periods, this results in hundreds of billions of records requiring a tiered storage architecture that balances:
+
+- **Performance** — real-time queries on recent data
+- **Cost** — economical storage for historical data
+- **Queryability** — ability to query cold data without complex restoration processes
+
+### 1.2 Data Profile
+
+| Parameter | Value |
+|-----------|-------|
+| Vessels tracked | 1,25,000 |
+| Ingest rate | 1,000 records/second |
+| Records per day (all vessels) | ~86.4 million |
+| Records per year (all vessels) | ~31.5 billion |
+| Records per vessel per day | ~691 |
+| Average report interval per vessel | ~125 seconds |
+| Raw document size (uncompressed) | ~200 bytes |
+| Uncompressed data per year | ~6.3 TB |
+| Uncompressed data — 5 years cold | ~31.5 TB |
+
+### 1.3 Scale Context
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                   DATA VOLUME AT SCALE                               │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Ingest: 1,000 records/sec × 86,400 sec/day = 86.4 million/day     │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ 1 YEAR (Hot):                                                │   │
+│  │   Records: ~31.5 billion                                     │   │
+│  │   Uncompressed: ~6.3 TB                                      │   │
+│  │   Snappy compressed: ~1.8 TB                                 │   │
+│  │   Zstd compressed: ~900 GB                                   │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │ 5 YEARS (Cold):                                              │   │
+│  │   Records: ~157.5 billion                                    │   │
+│  │   Uncompressed: ~31.5 TB                                     │   │
+│  │   Snappy compressed: ~9 TB                                   │   │
+│  │   Zstd compressed: ~4.5 TB                                   │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### 1.4 Requirements
+
+| Requirement | Hot Tier | Cold Tier |
+|-------------|----------|-----------|
+| Retention | 12 months | 5 years |
+| Access pattern | Real-time, frequent | Analytical, infrequent |
+| Query latency | <10ms | Seconds acceptable |
+| Storage medium | SSD / NVMe | HDD / Object Storage |
+| Query capability | Full CRUD, aggregation | Read-only, analytical |
+| Availability | High (3-node replica) | Standard (2-node acceptable) |
+
+---
+
+## 2. Foundational Concepts
+
+### 2.1 Compression — Snappy vs Zstd
+
+MongoDB WiredTiger storage engine supports multiple block compressors. Selecting the appropriate compressor per tier provides significant savings:
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│              COMPRESSION ALGORITHM COMPARISON                        │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  SNAPPY (recommended for Hot Tier)                                  │
+│  ─────────────────────────────────                                  │
+│  • Default MongoDB compressor                                       │
+│  • Optimized for speed (fast compress + decompress)                 │
+│  • Low CPU overhead — critical at 1,000 writes/sec                  │
+│  • Compression ratio: ~3.5× on timeseries data                      │
+│  • Trade-off: prioritizes throughput over space savings              │
+│                                                                     │
+│  ZSTD (recommended for Cold Tier)                                   │
+│  ────────────────────────────────                                   │
+│  • Higher compression ratio                                         │
+│  • Slightly higher CPU cost on write (acceptable for batch loads)   │
+│  • Decompression remains fast (read performance unaffected)         │
+│  • Compression ratio: ~7× on timeseries data                        │
+│  • Trade-off: prioritizes space savings over write speed            │
+│                                                                     │
+│  IMPACT (full fleet, 1 year of data):                               │
+│                                                                     │
+│    Uncompressed:    ~6.3 TB                                         │
+│    Snappy:          ~1.8 TB   (3.5× reduction)                      │
+│    Zstd:            ~900 GB   (7× reduction)                        │
+│                                                                     │
+│  Switching cold data from Snappy → Zstd = ~50% additional savings   │
+│  with zero application code changes                                  │
+│                                                                     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Pre-Aggregation Roll-Up Pattern
+
+Instead of retaining every raw data point indefinitely, pre-aggregation summarizes data at coarser time intervals. This is the **single most impactful technique** for reducing cold storage volume.
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│           GRANULARITY vs DOCUMENT COUNT REDUCTION                    │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  RAW (~125-second intervals per vessel)                             │
+│  ████████████████████████████████████  691 documents/day/vessel    │
+│                                            86.4 million/day total   │
+│                                                                     │
+│  5-MINUTE Roll-Up                                                   │
+│  ██████████                             288 documents/day/vessel   │
+│  Reduction: ~2.4×                           36 million/day total   │
+│                                                                     │
+│  HOURLY Roll-Up                                                     │
+│  ██                                      24 documents/day/vessel   │
+│  Reduction: ~29×                             3 million/day total   │
+│                                                                     │
+│  DAILY Roll-Up                                                      │
+│  ▎                                        1 document/day/vessel    │
+│  Reduction: ~691×                          125,000 docs/day total  │
+│                                                                     │
+│  VOYAGE Roll-Up                                                     │
+│  .                                     ~0.1 document/day/vessel    │
+│  Reduction: ~6,900×                     ~12,500 docs/day total     │
+│                                                                     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**Storage impact (1,25,000 vessels, 5 years cold, zstd compression):**
+
+| Approach | Document Count (5yr cold) | Storage Size (zstd) |
+|----------|--------------------------|---------------------|
+| Raw data | ~157.5 billion | ~4.5 TB |
+| 5-minute roll-ups | ~16.4 billion | ~1.9 TB |
+| Hourly roll-ups | ~5.5 billion | ~55 GB |
+| Daily roll-ups | ~228 million | ~4.5 GB |
+| Hourly + Daily combined | ~5.7 billion | ~60 GB |
+
+**Critical trade-off:** Roll-ups are lossy. Individual position reports cannot be reconstructed from aggregated summaries. The roll-up granularity must be chosen based on what cold-tier queries need to answer.
+
+### 2.3 Roll-Up Granularity Selection for Cold Data
+
+For cold data, the granularity of roll-ups can be tuned to **minutes or hours** depending on query requirements. Reducing granularity is the most powerful lever to shrink cold storage. Cold data does not need per-second or per-record resolution — by keeping roll-ups at 5-minute, 15-minute, or hourly intervals, the data volume drops dramatically while still supporting meaningful analytical queries.
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│     COLD DATA GRANULARITY OPTIONS & IMPACT                          │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  Original raw: ~691 records/day/vessel (at ~125 sec interval)       │
+│                                                                     │
+│  OPTION 1: 5-Minute Granularity (Cold)                              │
+│  ─────────────────────────────────────                              │
+│  • 288 documents/day/vessel                                         │
+│  • Still captures short-duration events (port approach, turns)      │
+│  • Suitable if cold queries need sub-hour precision                 │
+│  • Reduction: ~2.4× vs raw                                          │
+│                                                                     │
+│  OPTION 2: 15-Minute Granularity (Cold)                             │
+│  ──────────────────────────────────────                             │
+│  • 96 documents/day/vessel                                          │
+│  • Good balance: captures route segments, speed changes             │
+│  • Sufficient for most voyage reconstruction                        │
+│  • Reduction: ~7× vs raw                                            │
+│                                                                     │
+│  OPTION 3: Hourly Granularity (Cold) ◄── RECOMMENDED                │
+│  ─────────────────────────────────────                              │
+│  • 24 documents/day/vessel                                          │
+│  • Covers trend analysis, speed profiles, distance tracking         │
+│  • Answers 95% of historical analytical queries                     │
+│  • Reduction: ~29× vs raw                                           │
+│                                                                     │
+│  OPTION 4: Daily Granularity (Cold)                                 │
+│  ──────────────────────────────────                                 │
+│  • 1 document/day/vessel                                            │
+│  • Only for high-level fleet reporting                              │
+│  • Cannot answer intra-day questions                                │
+│  • Reduction: ~691× vs raw                                          │
+│                                                                     │
+│  MULTI-TIER: Combine hourly + daily for different query patterns    │
+│  • Hourly for operational analytics                                  │
+│  • Daily for fleet dashboards and KPIs                              │
+│                                                                     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**Choosing the right cold granularity:**
+
+| Query Requirement | Minimum Granularity Needed |
+|-------------------|---------------------------|
+| "Was vessel in port at 3 PM on March 5?" | 15-minute or hourly |
+| "Average speed during Q1 2024" | Daily sufficient |
+| "Route taken through strait on specific day" | 5-minute or 15-minute |
+| "Total distance per month for fleet" | Daily sufficient |
+| "Speed profile during specific voyage" | Hourly sufficient |
+| "Exact position at 14:32:07" | Not possible with roll-ups (need raw) |
+
+### 2.4 Roll-Up Document Schema (Ship Tracking)
+
+**Hourly Roll-Up:**
+- vesselId, hour_bucket (timestamp)
+- avg_speed, max_speed, min_speed (knots)
+- avg_heading, avg_course (degrees)
+- start_position (lat/lon), end_position (lat/lon)
+- distance_traveled_nm
+- position_count (source record count for validation)
+- nav_status (majority value in window)
+
+**Daily Roll-Up:**
+- vesselId, day_bucket (date)
+- total_distance_nm
+- avg_speed, max_speed
+- hours_underway, hours_at_anchor, hours_moored
+- port_entries (array), port_exits (array)
+- route_bounding_box (geo bounds)
+
+**Voyage Roll-Up:**
+- vesselId, voyage_id
+- departure_port, departure_time
+- arrival_port, arrival_time
+- total_distance_nm, duration_hours
+- avg_speed, route_geometry (simplified LineString)
+
+---
+
+## 3. Strategy A: MongoDB Hot + MongoDB Cold with Pre-Aggregated Roll-Ups
+
+### 3.1 Summary
+
+Two MongoDB clusters — a high-performance hot cluster on SSD for real-time data and a cost-optimized cold cluster on HDD storing only pre-aggregated summaries (hourly, daily, voyage roll-ups). Raw data is discarded after roll-ups are computed and verified.
+
+**Use case:** Historical queries need only summaries and trends, not individual position reports.
+
+### 3.2 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│          STRATEGY A: MongoDB Hot + MongoDB Cold (ROLL-UPS ONLY)          │
+│                                                                          │
+│    ┌──────────────────────────────────────────────────────────────┐     │
+│    │                     APPLICATION LAYER                          │     │
+│    │                                                                │     │
+│    │    Real-time queries ──────────► HOT CLUSTER                   │     │
+│    │    (last 12 months)                                            │     │
+│    │                                                                │     │
+│    │    Historical analytics ───────► COLD CLUSTER                  │     │
+│    │    (1–5 years, summaries)         (roll-up collections)        │     │
+│    │                                                                │     │
+│    └───────────────────────┬──────────────────────┬─────────────────┘     │
+│                            │                      │                       │
+│                            ▼                      ▼                       │
+│                                                                          │
+│    ┌────────────────────────────┐    ┌────────────────────────────────┐ │
+│    │      HOT CLUSTER            │    │       COLD CLUSTER              │ │
+│    │      (Sharded Cluster)      │    │       (Replica Set)             │ │
+│    │                              │    │                                  │ │
+│    │  Hardware:                   │    │  Hardware:                       │ │
+│    │  • NVMe / SSD                │    │  • HDD (high density)            │ │
+│    │  • 128–256 GB RAM per shard  │    │  • 64 GB RAM                     │ │
+│    │  • 3-node replica × N shards │    │  • 2-node replica + arbiter      │ │
+│    │  • Sharded for 1K writes/sec │    │                                  │ │
+│    │                              │    │  Compression: Zstd               │ │
+│    │  Compression: Snappy         │    │                                  │ │
+│    │                              │    │  Collections:                    │ │
+│    │  Collections:                │    │  ┌──────────────────────────┐   │ │
+│    │  ┌────────────────────────┐ │    │  │ positions_hourly          │   │ │
+│    │  │ positions_raw           │ │    │  │ (pre-aggregated, zstd)    │   │ │
+│    │  │ (timeseries collection) │ │    │  │                            │   │ │
+│    │  │                         │ │    │  │ positions_daily            │   │ │
+│    │  │ • Full granularity      │ │    │  │ (pre-aggregated, zstd)    │   │ │
+│    │  │ • All indexes           │ │    │  │                            │   │ │
+│    │  │ • 12-month retention    │ │    │  │ positions_voyage           │   │ │
+│    │  │ • 1,000 writes/sec      │ │    │  │ (pre-aggregated, zstd)    │   │ │
+│    │  └────────────────────────┘ │    │  └──────────────────────────┘   │ │
+│    │                              │    │                                  │ │
+│    │  Size: ~1.8 TB (snappy)      │    │  Indexes: vesselId + time only  │ │
+│    │                              │    │  5-year retention                │ │
+│    └──────────────┬───────────────┘    │                                  │ │
+│                   │                    │  Size: ~60 GB total              │ │
+│                   │                    │                                  │ │
+│                   │                    └──────────────────────────────────┘ │
+│                   │                                 ▲                      │
+│                   │                                 │                      │
+│                   ▼                                 │                      │
+│    ┌──────────────────────────────────────────────────────────────────┐  │
+│    │                    MIGRATION SERVICE                               │  │
+│    │                    (scheduled — weekly)                            │  │
+│    │                                                                    │  │
+│    │  1. IDENTIFY: Query hot cluster for records older than 12 months   │  │
+│    │                                                                    │  │
+│    │  2. AGGREGATE: Run aggregation pipeline on hot cluster             │  │
+│    │     • $match: timestamp older than 12 months                       │  │
+│    │     • $group: by vesselId + hour bucket → hourly roll-up           │  │
+│    │     • $group: by vesselId + day bucket → daily roll-up             │  │
+│    │     (use secondary read preference to avoid primary load)          │  │
+│    │                                                                    │  │
+│    │  3. WRITE: Insert roll-ups into cold cluster (zstd collections)    │  │
+│    │                                                                    │  │
+│    │  4. VERIFY: Confirm roll-up counts match expected source records   │  │
+│    │                                                                    │  │
+│    │  5. PURGE: Delete aged raw data from hot cluster                   │  │
+│    │     (ONLY after verification passes)                               │  │
+│    │                                                                    │  │
+│    └──────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3.3 Query Examples
+
+| Query | Target | Expected Latency |
+|-------|--------|-----------------|
+| Current position of vessel X | Hot → `positions_raw` | <10ms |
+| Vessel X speed trend last 6 months | Hot → `positions_raw` | <100ms |
+| Average speed of vessel X over 3 years | Cold → `positions_hourly` | <500ms |
+| Total distance by fleet in 2023 | Cold → `positions_daily` | <1s |
+| All voyages for vessel X last 4 years | Cold → `positions_voyage` | <100ms |
+
+### 3.4 Pros
+
+- Uniform query interface — same MongoDB driver and query language for both tiers
+- Extremely small cold tier footprint (~60 GB for 5 years of 1,25,000 vessels)
+- Cold queries are fast (entire roll-up dataset fits in RAM)
+- Simple backup/restore on cold cluster (minutes, not hours)
+- Minimal cold-tier hardware requirements (64 GB RAM sufficient)
+- Low operational overhead for cold cluster
+- Application routing logic is simple (time range check)
+- Hourly or minute-level granularity on cold keeps queries meaningful while drastically reducing volume
+
+### 3.5 Cons
+
+- **Raw data is discarded** — cannot answer "exact position at 14:32:07 on March 3, 2023"
+- Roll-up schema must be designed upfront; adding new metrics retroactively is impossible for already-aggregated data
+- Migration service is a custom component that must be reliable
+- Two clusters to manage (though cold cluster is very lightweight)
+- If roll-up granularity is too coarse, some queries cannot be satisfied
+
+### 3.6 Storage Estimate
+
+| Component | Size | Storage Type |
+|-----------|------|-------------|
+| Hot cluster (1yr raw, snappy) | ~1.8 TB | SSD |
+| Cold cluster (5yr hourly roll-ups, zstd) | ~55 GB | HDD |
+| Cold cluster (5yr daily roll-ups, zstd) | ~4.5 GB | HDD |
+| Cold cluster (5yr voyage roll-ups, zstd) | ~250 MB | HDD |
+| **Total** | **~1.86 TB** | |
+
+### 3.7 When to Choose This Strategy
+
+- Historical queries are primarily analytical (trends, averages, summaries)
+- No regulatory or contractual requirement to retain raw positions beyond 1 year
+- Minimizing cold storage cost and operational burden is the priority
+- Team is MongoDB-native and prefers a single query language
+
+---
+
+## 4. Strategy B: MongoDB Hot + MongoDB Cold with Actual (Raw) Data
+
+### 4.1 Summary
+
+Two MongoDB clusters — hot cluster on SSD for real-time data and cold cluster on HDD retaining full raw data with zstd compression. All original position records are preserved and queryable on the cold tier. Pre-aggregated roll-up collections exist alongside raw data to accelerate common analytical queries without scanning billions of documents.
+
+**Use case:** Raw position data must remain queryable for compliance, incident investigation, or contractual obligations.
+
+### 4.2 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│         STRATEGY B: MongoDB Hot + MongoDB Cold (RAW DATA RETAINED)       │
+│                                                                          │
+│    ┌──────────────────────────────────────────────────────────────┐     │
+│    │                     APPLICATION LAYER                          │     │
+│    │                                                                │     │
+│    │    Real-time queries ──────────► HOT CLUSTER                   │     │
+│    │    (last 12 months)                                            │     │
+│    │                                                                │     │
+│    │    Historical (analytics) ─────► COLD CLUSTER (roll-ups)       │     │
+│    │    Historical (exact data) ────► COLD CLUSTER (raw archive)    │     │
+│    │                                                                │     │
+│    └───────────────────────┬──────────────────────┬─────────────────┘     │
+│                            │                      │                       │
+│                            ▼                      ▼                       │
+│                                                                          │
+│    ┌────────────────────────────┐    ┌────────────────────────────────┐ │
+│    │      HOT CLUSTER            │    │       COLD CLUSTER              │ │
+│    │      (Sharded Cluster)      │    │       (Sharded Cluster)         │ │
+│    │                              │    │                                  │ │
+│    │  Hardware:                   │    │  Hardware:                       │ │
+│    │  • NVMe / SSD                │    │  • HDD (high density, RAID)      │ │
+│    │  • 128–256 GB RAM per shard  │    │  • 128 GB RAM per shard          │ │
+│    │  • 3-node replica × N shards │    │  • 3-node replica × M shards    │ │
+│    │  • Sharded for 1K writes/sec │    │    (or 2-node + arbiter)         │ │
+│    │                              │    │                                  │ │
+│    │  Compression: Snappy         │    │  Compression: Zstd               │ │
+│    │                              │    │                                  │ │
+│    │  Collections:                │    │  Collections:                    │ │
+│    │  ┌────────────────────────┐ │    │  ┌──────────────────────────┐   │ │
+│    │  │ positions_raw           │ │    │  │ positions_raw_archive     │   │ │
+│    │  │ (timeseries collection) │ │    │  │ (timeseries, zstd)        │   │ │
+│    │  │                         │ │    │  │                            │   │ │
+│    │  │ • Full granularity      │ │    │  │ • FULL raw data retained   │   │ │
+│    │  │ • All indexes           │ │    │  │ • 5-year retention         │   │ │
+│    │  │ • 12-month retention    │ │    │  │ • ~157.5 billion documents │   │ │
+│    │  │ • 1,000 writes/sec      │ │    │  │ • Sharded by vesselId +   │   │ │
+│    │  └────────────────────────┘ │    │  │   timestamp                │   │ │
+│    │                              │    │  │ • Sparse indexes           │   │ │
+│    │  Size: ~1.8 TB               │    │  │                            │   │ │
+│    │                              │    │  │ Size: ~4.5 TB              │   │ │
+│    └──────────────┬───────────────┘    │  └──────────────────────────┘   │ │
+│                   │                    │                                  │ │
+│                   │                    │  ┌──────────────────────────┐   │ │
+│                   │                    │  │ positions_hourly          │   │ │
+│                   │                    │  │ (roll-ups, zstd)          │   │ │
+│                   │                    │  │                            │   │ │
+│                   │                    │  │ positions_daily            │   │ │
+│                   │                    │  │ (roll-ups, zstd)          │   │ │
+│                   │                    │  │                            │   │ │
+│                   │                    │  │ Size: ~60 GB              │   │ │
+│                   │                    │  └──────────────────────────┘   │ │
+│                   │                    │                                  │ │
+│                   │                    └──────────────────────────────────┘ │
+│                   │                                 ▲                      │
+│                   │                                 │                      │
+│                   ▼                                 │                      │
+│    ┌──────────────────────────────────────────────────────────────────┐  │
+│    │                    MIGRATION SERVICE                               │  │
+│    │                    (scheduled — weekly)                            │  │
+│    │                                                                    │  │
+│    │  1. IDENTIFY: Records in hot cluster older than 12 months          │  │
+│    │                                                                    │  │
+│    │  2. COPY RAW: Bulk copy raw documents from hot to cold cluster     │  │
+│    │     • Use aggregation $merge or bulk read/write pipeline           │  │
+│    │     • Write to positions_raw_archive (zstd collection)             │  │
+│    │     • Data re-compressed from snappy → zstd on write (~50% saved) │  │
+│    │                                                                    │  │
+│    │  3. AGGREGATE: Compute hourly/daily roll-ups from migrated data    │  │
+│    │     • Write to positions_hourly, positions_daily                   │  │
+│    │     • Accelerates common analytical queries on cold tier            │  │
+│    │                                                                    │  │
+│    │  4. VERIFY: Document count + sample checksums match                │  │
+│    │                                                                    │  │
+│    │  5. PURGE: Delete aged raw data from hot cluster                   │  │
+│    │     (ONLY after full verification)                                 │  │
+│    │                                                                    │  │
+│    │  Migration throughput: ~600M records/week batch                     │  │
+│    │  (~86.4M/day × 7 days worth of aged data)                          │  │
+│    │                                                                    │  │
+│    └──────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.3 Query Examples
+
+| Query | Target | Expected Latency |
+|-------|--------|-----------------|
+| Current position of vessel X | Hot → `positions_raw` | <10ms |
+| Exact position at specific timestamp (old) | Cold → `positions_raw_archive` | 1–10s |
+| Average speed over 3 years | Cold → `positions_hourly` | <1s |
+| All positions in area on historical date | Cold → `positions_raw_archive` | 10–60s |
+| Route reconstruction for incident | Cold → `positions_raw_archive` | 5–30s |
+| Fleet distance summary 2023 | Cold → `positions_daily` | <1s |
+
+### 4.4 Pros
+
+- **Full data preservation** — every raw position report queryable for 5 years
+- Same MongoDB query language across hot and cold
+- Zstd on cold provides ~50% storage savings over snappy (no application changes)
+- Can answer any historical query at full granularity (no information loss)
+- Roll-ups accelerate common analytical queries (avoid scanning billions of docs)
+- Compliance/audit requirements fully met
+- Incident investigation possible at full resolution
+
+### 4.5 Cons
+
+- **Very large cold storage footprint** (~4.5 TB for 5 years)
+- Cold cluster needs significant RAM for indexes over ~157.5 billion documents
+- Cold cluster requires sharding (too large for single replica set)
+- Queries on cold raw data are slower (HDD + massive dataset)
+- Migration moves ~600M records/week (network and compute intensive)
+- Higher hardware cost for cold tier
+- Backup/restore of cold cluster takes many hours
+- Index maintenance on billions of documents is operationally challenging
+
+### 4.6 Storage Estimate
+
+| Component | Size | Storage Type |
+|-----------|------|-------------|
+| Hot cluster (1yr raw, snappy) | ~1.8 TB | SSD |
+| Cold cluster (5yr raw, zstd) | ~4.5 TB | HDD |
+| Cold cluster (5yr hourly roll-ups, zstd) | ~55 GB | HDD |
+| Cold cluster (5yr daily roll-ups, zstd) | ~4.5 GB | HDD |
+| **Total** | **~6.36 TB** | |
+
+### 4.7 When to Choose This Strategy
+
+- Regulatory or contractual obligation to retain all raw position data for 5+ years
+- Requirement for incident investigation at full granularity on historical data
+- Need to reconstruct exact vessel routes/positions from any point in history
+- Organization is willing to invest in significant cold-tier infrastructure
+- Geofence alerting or historical area-based queries required on old data
+
+---
+
+## 5. Strategy C: MongoDB Hot + MinIO Cold (Object Storage)
+
+### 5.1 Summary
+
+MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storage) on commodity HDD hardware for long-term cold storage. Raw data exported as Parquet files (columnar format) to MinIO. Pre-aggregated roll-ups stored in a small MongoDB instance for fast analytical queries. Cold raw data queryable via SQL engines (Trino, DuckDB, or Apache Spark).
+
+**Use case:** Cost-sensitive environments needing raw data retention at minimal expense, with most cold queries served by roll-ups and only occasional raw data access.
+
+### 5.2 Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│              STRATEGY C: MongoDB Hot + MinIO Cold                         │
+│                                                                          │
+│    ┌──────────────────────────────────────────────────────────────┐     │
+│    │                     APPLICATION LAYER                          │     │
+│    │                                                                │     │
+│    │    Real-time queries ──────────────► MongoDB Hot Cluster        │     │
+│    │    (last 12 months)                                            │     │
+│    │                                                                │     │
+│    │    Historical analytics ───────────► MongoDB Roll-Up Store      │     │
+│    │    (summaries, trends — 95% of       (small, fast)             │     │
+│    │     cold queries)                                              │     │
+│    │                                                                │     │
+│    │    Historical raw data deep-dive ──► Trino / DuckDB            │     │
+│    │    (exact positions, compliance       (SQL over MinIO Parquet)  │     │
+│    │     — 5% of cold queries)                                      │     │
+│    │                                                                │     │
+│    └──────────┬──────────────────┬────────────────────┬─────────────┘     │
+│               │                  │                    │                   │
+│               ▼                  ▼                    ▼                   │
+│                                                                          │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌────────────────────────┐│
+│  │  MONGODB          │  │  MONGODB          │  │  QUERY ENGINE           ││
+│  │  HOT CLUSTER      │  │  ROLL-UP STORE    │  │  (Trino / DuckDB)       ││
+│  │  (Sharded)        │  │                    │  │                          ││
+│  │                    │  │  Hardware:         │  │  • SQL interface          ││
+│  │  Hardware:         │  │  • HDD (or SSD)   │  │  • Reads Parquet from    ││
+│  │  • NVMe / SSD      │  │  • 32–64 GB RAM   │  │    MinIO via S3 API      ││
+│  │  • 128–256 GB RAM  │  │  • 2-node replica │  │  • Partition pruning     ││
+│  │  • 3-node × N      │  │                    │  │    by year/month/vessel  ││
+│  │    shards          │  │  Compression:      │  │                          ││
+│  │                    │  │  Zstd              │  └────────────┬─────────────┘│
+│  │  Compression:      │  │                    │               │             │
+│  │  Snappy            │  │  Collections:      │               │             │
+│  │                    │  │  ┌──────────────┐ │               │             │
+│  │  Collections:      │  │  │hourly_rollups│ │               │             │
+│  │  ┌──────────────┐ │  │  │daily_rollups │ │               │             │
+│  │  │positions_raw  │ │  │  │voyage_rollups│ │               │             │
+│  │  │(timeseries)   │ │  │  │              │ │               │             │
+│  │  │               │ │  │  │5-year retain │ │               │             │
+│  │  │12-month       │ │  │  │~60 GB total  │ │               │             │
+│  │  │retention      │ │  │  └──────────────┘ │               │             │
+│  │  └──────────────┘ │  │                    │               │             │
+│  │                    │  └────────────────────┘               │             │
+│  │  Size: ~1.8 TB     │                                       │             │
+│  │                    │                                       │             │
+│  └────────┬───────────┘                                       │             │
+│           │                                                   │             │
+│           ▼                                                   ▼             │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │                    ETL / MIGRATION SERVICE                            │  │
+│  │                    (scheduled — weekly)                               │  │
+│  │                                                                       │  │
+│  │  1. IDENTIFY: Records in hot cluster older than 12 months             │  │
+│  │                                                                       │  │
+│  │  2. AGGREGATE: Compute hourly/daily/voyage roll-ups                   │  │
+│  │     • Write to MongoDB Roll-Up Store (zstd)                           │  │
+│  │                                                                       │  │
+│  │  3. EXPORT: Convert raw documents to Apache Parquet format            │  │
+│  │     • Columnar compression (15–20× ratio)                             │  │
+│  │     • Partition by year / month / vesselId                            │  │
+│  │     • Upload to MinIO via S3 PUT API                                  │  │
+│  │     • Batch: ~600M records/week                                       │  │
+│  │                                                                       │  │
+│  │  4. VERIFY: Record counts + checksums confirmed                       │  │
+│  │                                                                       │  │
+│  │  5. PURGE: Delete aged data from hot cluster                          │  │
+│  │                                                                       │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│                                         │                                │
+│                                         ▼                                │
+│                                                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐│
+│  │                       MinIO CLUSTER                                   ││
+│  │                       (S3-compatible Object Storage)                   ││
+│  │                                                                       ││
+│  │  Hardware:                                                            ││
+│  │  • Commodity HDD (high density, 4+ nodes)                             ││
+│  │  • Erasure coding (data protection without full replication)          ││
+│  │  • Minimal RAM required (not a database — just storage)              ││
+│  │                                                                       ││
+│  │  Storage Layout:                                                      ││
+│  │  s3://ship-archive/                                                   ││
+│  │    └── positions/                                                     ││
+│  │        ├── year=2025/                                                 ││
+│  │        │   ├── month=01/                                              ││
+│  │        │   │   ├── vessel=IMO9434567/positions.parquet                ││
+│  │        │   │   ├── vessel=IMO9876543/positions.parquet                ││
+│  │        │   │   └── ... (1,25,000 vessel files per month)              ││
+│  │        │   ├── month=02/                                              ││
+│  │        │   └── ...                                                    ││
+│  │        ├── year=2024/                                                 ││
+│  │        └── ...                                                        ││
+│  │                                                                       ││
+│  │  Properties:                                                          ││
+│  │  • Parquet columnar format (15–20× compression on timeseries)         ││
+│  │  • Immutable files — append only, never modified                     ││
+│  │  • Erasure coding = data protection with ~1.5× overhead (vs 3×)      ││
+│  │  • Scales linearly — add disks/nodes for capacity                    ││
+│  │  • No license cost (open source)                                      ││
+│  │                                                                       ││
+│  │  Size: ~1.8 TB (5 years, 1,25,000 vessels, Parquet compressed)        ││
+│  │                                                                       ││
+│  └─────────────────────────────────────────────────────────────────────┘│
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.3 Query Routing Logic
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                      QUERY ROUTING                               │
+├────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  INCOMING QUERY                                                  │
+│       │                                                          │
+│       ▼                                                          │
+│  Is time range within last 12 months?                            │
+│       │                                                          │
+│       ├── YES ──► MongoDB Hot Cluster (positions_raw)            │
+│       │           Latency: <10ms                                 │
+│       │                                                          │
+│       └── NO (historical)                                        │
+│            │                                                     │
+│            ▼                                                     │
+│       Is query analytical? (averages, trends, summaries)         │
+│            │                                                     │
+│            ├── YES ──► MongoDB Roll-Up Store                     │
+│            │           (hourly/daily/voyage collections)          │
+│            │           Latency: <1s                               │
+│            │           Serves: 95% of cold queries               │
+│            │                                                     │
+│            └── NO (needs exact raw positions)                    │
+│                 │                                                │
+│                 └──► Trino/DuckDB over MinIO Parquet             │
+│                      Latency: 10–120 seconds                     │
+│                      Serves: 5% of cold queries                  │
+│                      (incident investigation, compliance audit)  │
+│                                                                  │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 5.4 Pros
+
+- **Lowest cold storage cost** — MinIO on commodity HDD with erasure coding
+- Parquet delivers best-in-class compression for timeseries (15–20× ratio)
+- Roll-ups in MongoDB serve 95% of cold queries at native speed
+- Raw data fully preserved for compliance — no data loss
+- MinIO scales linearly to petabytes (just add disks)
+- All cold components are open source — zero license cost
+- Immutable Parquet files simplify backup (object replication)
+- Clear separation: "queryable cold" (MongoDB roll-ups) vs "archival cold" (MinIO)
+- MinIO supports lifecycle policies, versioning, and retention locks
+- Storage overhead for protection is only ~1.5× (erasure coding vs 3× replication)
+
+### 5.5 Cons
+
+- **Three systems to manage** (MongoDB, MinIO, query engine)
+- Raw data queries require SQL (Trino/DuckDB) — different language than MongoDB
+- Higher operational complexity (ETL has two outputs: roll-ups + Parquet)
+- Query engine cluster is additional infrastructure
+- Team needs both MongoDB and data engineering/SQL skills
+- Parquet schema evolution requires careful planning
+- Raw queries on MinIO are slow (10s–2min for large scans) — not suitable for real-time
+- More moving parts = more potential failure points
+- Large Parquet export volume (~600M records/week)
+
+### 5.6 Storage Estimate
+
+| Component | Size | Storage Type |
+|-----------|------|-------------|
+| MongoDB hot cluster (1yr raw, snappy) | ~1.8 TB | SSD |
+| MongoDB roll-up store (5yr, hourly+daily, zstd) | ~60 GB | HDD |
+| MinIO archive (5yr raw, Parquet) | ~1.8 TB | HDD (erasure coded) |
+| MinIO with erasure overhead (~1.5×) | ~2.7 TB | HDD actual disk |
+| **Total usable** | **~3.66 TB** | |
+| **Total raw disk (with erasure)** | **~4.56 TB** | |
+
+### 5.7 When to Choose This Strategy
+
+- Cold storage cost is the primary driver
+- Raw data must be retained for compliance but is rarely accessed (<5% of queries)
+- Organization is comfortable managing object storage infrastructure (MinIO)
+- Team has SQL/data engineering skills for Trino/DuckDB
+- Data volumes are expected to grow significantly
+- Audit trail or regulatory retention mandates exist
+
+---
+
+## 6. Comprehensive Comparison
+
+| Criteria | Strategy A (Roll-Ups Only) | Strategy B (Raw Data Retained) | Strategy C (MinIO Archive) |
+|----------|---------------------------|-------------------------------|---------------------------|
+| **Cold storage size** | ~60 GB | ~4.56 TB | ~1.86 TB |
+| **Total storage (hot+cold)** | ~1.86 TB | ~6.36 TB | ~3.66 TB |
+| **Raw data preserved?** | No (discarded) | Yes (MongoDB) | Yes (MinIO Parquet) |
+| **Cold query speed (analytics)** | <1s (roll-ups) | <1s (roll-ups) | <1s (roll-ups) |
+| **Cold query speed (raw)** | N/A | 1–60s (HDD MongoDB) | 10–120s (Trino/MinIO) |
+| **Query language (cold)** | MongoDB | MongoDB | MongoDB (roll-ups) + SQL (raw) |
+| **Operational complexity** | Low | Medium-High | Medium-High |
+| **Systems to manage** | 2 (MongoDB clusters) | 2 (MongoDB clusters) | 3 (MongoDB + MinIO + query engine) |
+| **Cold tier hardware cost** | Very Low | High | Medium |
+| **Compliance (full retention)** | No | Yes | Yes |
+| **Incident investigation** | Limited (summaries only) | Full capability | Full capability (slower) |
+| **Scalability (cold)** | Minimal concern | Add shards | Linear (add MinIO nodes) |
+| **Cold tier RAM requirement** | 64 GB | 128+ GB per shard | 32–64 GB (roll-ups) |
+| **Documents in cold tier** | ~5.7 billion | ~157.5 billion + 5.7B | ~5.7 billion (MongoDB only) |
+| **Backup/restore cold** | Minutes | Hours | Minutes (roll-ups) + object replication |
+
+---
+
+## 7. Cumulative Storage Reduction — All Levers Combined
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                                                                         │
+│  Starting: 5 years, 1,25,000 vessels, 1000 rec/sec, raw = ~31.5 TB     │
+│                                                                         │
+│  ┌───────────────────────────────────────────────────────────────┐     │
+│  │ Lever 1: MongoDB Timeseries + Snappy (hot default)             │     │
+│  │ 31.5 TB → 9 TB                                   3.5× saved   │     │
+│  └───────────────────────────────────────────────────────────────┘     │
+│                          │                                              │
+│                          ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────┐     │
+│  │ Lever 2: Switch cold to Zstd compression                       │     │
+│  │ 9 TB → 4.5 TB                                    2× saved     │     │
+│  └───────────────────────────────────────────────────────────────┘     │
+│                          │                                              │
+│                          ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────┐     │
+│  │ Lever 3: Hourly pre-aggregation roll-ups (cold only)           │     │
+│  │ 4.5 TB → ~55 GB                                  ~82× saved   │     │
+│  └───────────────────────────────────────────────────────────────┘     │
+│                          │                                              │
+│                          ▼                                              │
+│  ┌───────────────────────────────────────────────────────────────┐     │
+│  │ Lever 4: Parquet/Columnar for raw archive (if retaining raw)   │     │
+│  │ 4.5 TB (zstd raw) → ~1.8 TB (Parquet)            ~2.5× saved  │     │
+│  └───────────────────────────────────────────────────────────────┘     │
+│                                                                         │
+│  FINAL STATES:                                                          │
+│  ─────────────                                                          │
+│  Strategy A: ~60 GB cold    (roll-ups only, raw discarded)              │
+│  Strategy B: ~4.56 TB cold  (raw in MongoDB zstd + roll-ups)            │
+│  Strategy C: ~1.86 TB cold  (raw in MinIO Parquet + roll-ups in Mongo)  │
+│                                                                         │
+│  vs storing everything raw in MongoDB (snappy): ~9 TB cold              │
+│                                                                         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 8. Data Lifecycle Flow
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                       DATA LIFECYCLE FLOW                            │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  INGEST (1,000 records/second, 1,25,000 vessels)                    │
+│    │                                                                │
+│    ▼                                                                │
+│  HOT TIER (MongoDB, SSD, Snappy, 0–12 months)                      │
+│    │  • Full granularity                                            │
+│    │  • Full indexing, sharded for write throughput                  │
+│    │  • Real-time queries                                           │
+│    │  • ~1.8 TB storage                                             │
+│    │                                                                │
+│    │──── [Weekly migration job at 12-month boundary] ────           │
+│    │                                                                │
+│    ▼                                                                │
+│  COMPUTE ROLL-UPS (reduce granularity to minutes/hours for cold)    │
+│    │  • Aggregation pipeline: hourly, daily, voyage summaries       │
+│    │  • Hourly granularity = 29× fewer documents                    │
+│    │  • Zstd compression on cold write = additional 50% savings     │
+│    │  • ~600M records/week processed                                │
+│    │                                                                │
+│    ├──── Strategy A: Discard raw, keep roll-ups only                │
+│    │                                                                │
+│    ├──── Strategy B: Copy raw to cold MongoDB (zstd) + roll-ups    │
+│    │                                                                │
+│    └──── Strategy C: Export raw to MinIO (Parquet) + roll-ups      │
+│                                                                     │
+│  COLD TIER (1–5 years)                                              │
+│    │  • Roll-ups serve analytical queries (<1s)                     │
+│    │  • Raw data (if retained) for compliance/deep-dive            │
+│    │  • Reduced granularity = reduced storage + faster queries      │
+│    │                                                                │
+│    │──── [5-year retention limit] ────                              │
+│    │                                                                │
+│    ▼                                                                │
+│  PURGE                                                              │
+│    • Data older than 5 years deleted                                │
+│    • TTL index or scheduled cleanup                                 │
+│                                                                     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 9. Migration Workflow Detail
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│                  WEEKLY MIGRATION WORKFLOW                           │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌─────┐    ┌─────────────┐    ┌─────────────┐    ┌────────────┐ │
+│  │START│───►│ IDENTIFY    │───►│ AGGREGATE   │───►│ WRITE      │ │
+│  └─────┘    │ aged data   │    │ roll-ups    │    │ to cold    │ │
+│             │ (>12 months)│    │ (hourly,    │    │ tier       │ │
+│             │             │    │  daily,     │    │ (zstd)     │ │
+│             │ ~600M recs  │    │  voyage)    │    │            │ │
+│             └─────────────┘    └─────────────┘    └──────┬─────┘ │
+│                                                          │       │
+│                                                          ▼       │
+│  ┌─────┐    ┌─────────────┐    ┌─────────────┐    ┌────────────┐ │
+│  │DONE │◄───│ PURGE       │◄───│ VERIFY      │◄───│ EXPORT RAW │ │
+│  └─────┘    │ from hot    │    │ checksums   │    │ (Strategy  │ │
+│             │ (only after │    │ & counts    │    │  B: MongoDB│ │
+│             │  verify)    │    │             │    │  C: MinIO) │ │
+│             └─────────────┘    └─────────────┘    └────────────┘ │
+│                                                                     │
+│  Safety rules:                                                      │
+│  • NEVER purge before verification passes                          │
+│  • Idempotent: re-running produces same result (upsert semantics)  │
+│  • Observable: metrics on lag, success rate, processing time        │
+│  • Use secondary read preference to avoid hot cluster primary load  │
+│                                                                     │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 10. Recommendation
+
+### 10.1 Pre-Aggregation is the Foundation
+
+**The pre-aggregation roll-up pattern should be implemented regardless of which infrastructure strategy is selected.** It is the single most impactful technique:
+
+- ~29× document count reduction at hourly granularity (or ~7× at 15-minute)
+- Sub-second analytical queries on cold data (vs minutes scanning raw)
+- Dramatically reduced cold-tier hardware requirements
+- Simpler backups, faster restores, lower operational overhead
+- Works equally well with any cold storage backend
+- Keeping cold data at minute or hour granularity still answers 95% of historical queries
+
+### 10.2 Strategy Selection Guide
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  Do you need raw position data queryable after 12 months?       │
+│       │                                                         │
+│       ├── NO                                                    │
+│       │   └── ✅ STRATEGY A: MongoDB Hot + Cold (Roll-Ups Only) │
+│       │       • Lowest cost, simplest operations                │
+│       │       • Cold tier: ~60 GB                               │
+│       │       • Best if no compliance/retention mandate          │
+│       │                                                         │
+│       └── YES                                                   │
+│            │                                                    │
+│            ▼                                                    │
+│       Is cold storage cost the primary constraint?              │
+│            │                                                    │
+│            ├── NO (performance & query simplicity matter more)   │
+│            │   └── ✅ STRATEGY B: MongoDB Hot + Cold (Raw)       │
+│            │       • Full raw data queryable via MongoDB         │
+│            │       • Same query language everywhere              │
+│            │       • Cold tier: ~4.56 TB                         │
+│            │       • Higher hardware investment                  │
+│            │                                                    │
+│            └── YES (minimize cost, raw access is rare)           │
+│                └── ✅ STRATEGY C: MongoDB Hot + MinIO Cold        │
+│                    • Cheapest raw archival (Parquet + MinIO)     │
+│                    • Roll-ups in MongoDB for 95% of queries     │
+│                    • Cold tier: ~1.86 TB                         │
+│                    • Accept SQL for raw queries + more ops       │
+│                                                                 │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### 10.3 Universal Recommendations (All Strategies)
+
+1. **Use Zstd compression** on all cold-tier collections (~50% savings over snappy)
+2. **Implement hourly + daily roll-ups** — covers 95% of historical query needs
+3. **Reduce cold granularity to minutes or hours** — the most powerful storage reduction lever
+4. **Design roll-up schema upfront** — changing it retroactively is expensive for already-processed data
+5. **Never purge hot data before cold write is verified** — checksums + counts must match
+6. **Monitor migration pipeline** — lag, success rate, processing time, storage growth
+7. **Use secondary read preference** during migration to protect hot cluster primary performance
+
+---
+
+> **Note:** All storage sizes, document counts, and compression ratios presented in this report are illustrative estimates based on the stated data profile (1,25,000 vessels, 1,000 records/sec, ~200 bytes/document). Actual sizes will vary depending on document structure, field count, index design, data distribution patterns, and compression effectiveness on real workloads. These calculations are provided as reference examples to compare the relative impact of each strategy. Actual sizing should be validated through proof-of-concept testing with representative production data.
+
+---
+
+*End of Report*
