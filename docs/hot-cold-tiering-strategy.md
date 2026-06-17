@@ -698,29 +698,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 
 ---
 
-## 6. Comprehensive Comparison
-
-| Criteria | Strategy A (Roll-Ups Only) | Strategy B (Raw Data Retained) | Strategy C (MinIO Archive) |
-|----------|---------------------------|-------------------------------|---------------------------|
-| **Cold storage size** | ~60 GB | ~4.56 TB | ~1.86 TB |
-| **Total storage (hot+cold)** | ~1.86 TB | ~6.36 TB | ~3.66 TB |
-| **Raw data preserved?** | No (discarded) | Yes (MongoDB) | Yes (MinIO Parquet) |
-| **Cold query speed (analytics)** | <1s (roll-ups) | <1s (roll-ups) | <1s (roll-ups) |
-| **Cold query speed (raw)** | N/A | 1–60s (HDD MongoDB) | 10–120s (Trino/MinIO) |
-| **Query language (cold)** | MongoDB | MongoDB | MongoDB (roll-ups) + SQL (raw) |
-| **Operational complexity** | Low | Medium-High | Medium-High |
-| **Systems to manage** | 2 (MongoDB clusters) | 2 (MongoDB clusters) | 3 (MongoDB + MinIO + query engine) |
-| **Cold tier hardware cost** | Very Low | High | Medium |
-| **Compliance (full retention)** | No | Yes | Yes |
-| **Incident investigation** | Limited (summaries only) | Full capability | Full capability (slower) |
-| **Scalability (cold)** | Minimal concern | Add shards | Linear (add MinIO nodes) |
-| **Cold tier RAM requirement** | 64 GB | 128+ GB per shard | 32–64 GB (roll-ups) |
-| **Documents in cold tier** | ~5.7 billion | ~157.5 billion + 5.7B | ~5.7 billion (MongoDB only) |
-| **Backup/restore cold** | Minutes | Hours | Minutes (roll-ups) + object replication |
-
----
-
-## 7. Cumulative Storage Reduction — All Levers Combined
+## 6. Cumulative Storage Reduction — All Levers Combined
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -763,7 +741,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 
 ---
 
-## 8. Data Lifecycle Flow
+## 7. Data Lifecycle Flow
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
@@ -811,7 +789,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 
 ---
 
-## 9. Migration Workflow Detail
+## 8. Migration Workflow Detail
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
@@ -845,7 +823,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 
 ---
 
-## 10. Recommendation
+## 9. Recommendation
 
 ### 10.1 Pre-Aggregation is the Foundation
 
