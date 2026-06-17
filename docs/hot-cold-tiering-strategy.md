@@ -44,16 +44,14 @@ Ship tracking systems continuously ingest AIS (Automatic Identification System) 
 │  │ 1 YEAR (Hot):                                                │   │
 │  │   Records: ~31.5 billion                                     │   │
 │  │   Uncompressed: ~63.1 TB                                     │   │
-│  │   Snappy compressed: ~18.0 TB                                │   │
-│  │   Zstd compressed: ~9.0 TB                                   │   │
+│  │   Assumed 10:1 compressed: ~6.3 TB                           │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │ 5 YEARS (Cold):                                              │   │
 │  │   Records: ~157.5 billion                                    │   │
 │  │   Uncompressed: ~315.4 TB                                    │   │
-│  │   Snappy compressed: ~90.1 TB                                │   │
-│  │   Zstd compressed: ~45.1 TB                                  │   │
+│  │   Assumed 10:1 compressed: ~31.5 TB                          │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 └────────────────────────────────────────────────────────────────────┘
@@ -74,39 +72,26 @@ Ship tracking systems continuously ingest AIS (Automatic Identification System) 
 
 ## 2. Foundational Concepts
 
-### 2.1 Compression — Snappy vs Zstd
+### 2.1 Compression Assumption (10:1)
 
-MongoDB WiredTiger storage engine supports multiple block compressors. Selecting the appropriate compressor per tier provides significant savings:
+For capacity planning in this report, all compressed-size calculations use a uniform assumed effective compression ratio of 10:1.
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
 │              COMPRESSION ALGORITHM COMPARISON                        │
 ├────────────────────────────────────────────────────────────────────┤
 │                                                                     │
-│  SNAPPY (recommended for Hot Tier)                                  │
-│  ─────────────────────────────────                                  │
-│  • Default MongoDB compressor                                       │
-│  • Optimized for speed (fast compress + decompress)                 │
-│  • Low CPU overhead — critical at 1,000 writes/sec                  │
-│  • Compression ratio: ~3.5× on timeseries data                      │
-│  • Trade-off: prioritizes throughput over space savings              │
-│                                                                     │
-│  ZSTD (recommended for Cold Tier)                                   │
-│  ────────────────────────────────                                   │
-│  • Higher compression ratio                                         │
-│  • Slightly higher CPU cost on write (acceptable for batch loads)   │
-│  • Decompression remains fast (read performance unaffected)         │
-│  • Compression ratio: ~7× on timeseries data                        │
-│  • Trade-off: prioritizes space savings over write speed            │
+│  ASSUMED COMPRESSION FOR SIZING                                     │
+│  ─────────────────────────────                                       │
+│  • Effective compression ratio: 10:1                                │
+│  • Applied uniformly across capacity estimates                       │
+│  • Used for hot and cold sizing calculations                         │
+│  • Actual ratios vary by schema and workload                         │
 │                                                                     │
 │  IMPACT (full fleet, 1 year of data):                               │
 │                                                                     │
 │    Uncompressed:    ~63.1 TB                                        │
-│    Snappy:          ~18.0 TB  (3.5× reduction)                      │
-│    Zstd:            ~9.0 TB   (7× reduction)                        │
-│                                                                     │
-│  Switching cold data from Snappy → Zstd = ~50% additional savings   │
-│  with zero application code changes                                  │
+│    Assumed compressed: ~6.3 TB (10× reduction)                      │
 │                                                                     │
 └────────────────────────────────────────────────────────────────────┘
 ```
@@ -143,15 +128,15 @@ Instead of retaining every raw data point indefinitely, pre-aggregation summariz
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-**Storage impact (1,25,000 vessels, 5 years cold, zstd compression):**
+**Storage impact (1,25,000 vessels, 5 years cold, assumed 10:1 compression):**
 
-| Approach | Document Count (5yr cold) | Storage Size (zstd) |
+| Approach | Document Count (5yr cold) | Storage Size (assumed 10:1) |
 |----------|--------------------------|---------------------|
-| Raw data | ~157.5 billion | ~45.1 TB |
-| 5-minute roll-ups | ~16.4 billion | ~19.0 TB |
-| Hourly roll-ups | ~5.5 billion | ~550 GB |
+| Raw data | ~157.5 billion | ~31.5 TB |
+| 5-minute roll-ups | ~16.4 billion | ~3.3 TB |
+| Hourly roll-ups | ~5.5 billion | ~1.1 TB |
 | Daily roll-ups | ~228 million | ~45 GB |
-| Hourly + Daily combined | ~5.7 billion | ~600 GB |
+| Hourly + Daily combined | ~5.7 billion | ~1.15 TB |
 
 **Critical trade-off:** Roll-ups are lossy. Individual position reports cannot be reconstructed from aggregated summaries. The roll-up granularity must be chosen based on what cold-tier queries need to answer.
 
@@ -265,10 +250,10 @@ Two MongoDB clusters — a high-performance hot cluster on SSD for real-time dat
 │    │  │ • 1,000 writes/sec      │ │    │  │ (pre-aggregated, zstd)    │   │ │
 │    │  └────────────────────────┘ │    │  └──────────────────────────┘   │ │
 │    │                              │    │                                  │ │
-│    │  Size: ~18.0 TB (snappy)     │    │  Indexes: vesselId + time only  │ │
+│    │  Size: ~6.3 TB (assumed 10:1)│    │  Indexes: vesselId + time only  │ │
 │    │                              │    │  5-year retention                │ │
 │    └──────────────┬───────────────┘    │                                  │ │
-│                   │                    │  Size: ~600 GB total             │ │
+│                   │                    │  Size: ~1.15 TB total            │ │
 │                   │                    │                                  │ │
 │                   │                    └──────────────────────────────────┘ │
 │                   │                                 ▲                      │
@@ -311,7 +296,7 @@ Two MongoDB clusters — a high-performance hot cluster on SSD for real-time dat
 ### 3.4 Pros
 
 - Uniform query interface — same MongoDB driver and query language for both tiers
-- Small cold tier footprint for this scale (~600 GB for 5 years of 1,25,000 vessels)
+- Cold tier footprint reduced significantly for this scale (~1.15 TB for 5 years of 1,25,000 vessels)
 - Cold queries are fast (entire roll-up dataset fits in RAM)
 - Simple backup/restore on cold cluster (minutes, not hours)
 - Minimal cold-tier hardware requirements (64 GB RAM sufficient)
@@ -331,11 +316,11 @@ Two MongoDB clusters — a high-performance hot cluster on SSD for real-time dat
 
 | Component | Size | Storage Type |
 |-----------|------|-------------|
-| Hot cluster (1yr raw, snappy) | ~18.0 TB | SSD |
-| Cold cluster (5yr hourly roll-ups, zstd) | ~550 GB | HDD |
+| Hot cluster (1yr raw, assumed 10:1) | ~6.3 TB | SSD |
+| Cold cluster (5yr hourly roll-ups, assumed 10:1) | ~1.1 TB | HDD |
 | Cold cluster (5yr daily roll-ups, zstd) | ~45 GB | HDD |
-| Cold cluster (5yr voyage roll-ups, zstd) | ~2.5 GB | HDD |
-| **Total** | **~18.6 TB** | |
+| Cold cluster (5yr voyage roll-ups, assumed 10:1) | ~4.5 GB | HDD |
+| **Total** | **~7.45 TB** | |
 
 ### 3.7 When to Choose This Strategy
 
@@ -397,8 +382,8 @@ Two MongoDB clusters — hot cluster on SSD for real-time data and cold cluster 
 │    │  │ • 1,000 writes/sec      │ │    │  │ • Sharded by vesselId +   │   │ │
 │    │  └────────────────────────┘ │    │  │   timestamp                │   │ │
 │    │                              │    │  │ • Sparse indexes           │   │ │
-│    │  Size: ~18.0 TB              │    │  │                            │   │ │
-│    │                              │    │  │ Size: ~45.1 TB             │   │ │
+│    │  Size: ~6.3 TB               │    │  │                            │   │ │
+│    │                              │    │  │ Size: ~31.5 TB             │   │ │
 │    └──────────────┬───────────────┘    │  └──────────────────────────┘   │ │
 │                   │                    │                                  │ │
 │                   │                    │  ┌──────────────────────────┐   │ │
@@ -408,7 +393,7 @@ Two MongoDB clusters — hot cluster on SSD for real-time data and cold cluster 
 │                   │                    │  │ positions_daily            │   │ │
 │                   │                    │  │ (roll-ups, zstd)          │   │ │
 │                   │                    │  │                            │   │ │
-│                   │                    │  │ Size: ~600 GB             │   │ │
+│                   │                    │  │ Size: ~1.15 TB            │   │ │
 │                   │                    │  └──────────────────────────┘   │ │
 │                   │                    │                                  │ │
 │                   │                    └──────────────────────────────────┘ │
@@ -424,7 +409,7 @@ Two MongoDB clusters — hot cluster on SSD for real-time data and cold cluster 
 │    │  2. COPY RAW: Bulk copy raw documents from hot to cold cluster     │  │
 │    │     • Use aggregation $merge or bulk read/write pipeline           │  │
 │    │     • Write to positions_raw_archive (zstd collection)             │  │
-│    │     • Data re-compressed from snappy → zstd on write (~50% saved) │  │
+│    │     • Capacity estimates assume effective 10:1 compression         │  │
 │    │                                                                    │  │
 │    │  3. AGGREGATE: Compute hourly/daily roll-ups from migrated data    │  │
 │    │     • Write to positions_hourly, positions_daily                   │  │
@@ -458,7 +443,7 @@ Two MongoDB clusters — hot cluster on SSD for real-time data and cold cluster 
 
 - **Full data preservation** — every raw position report queryable for 5 years
 - Same MongoDB query language across hot and cold
-- Zstd on cold provides ~50% storage savings over snappy (no application changes)
+- Consistent sizing assumption (10:1) simplifies planning and capacity forecasting
 - Can answer any historical query at full granularity (no information loss)
 - Roll-ups accelerate common analytical queries (avoid scanning billions of docs)
 - Compliance/audit requirements fully met
@@ -466,7 +451,7 @@ Two MongoDB clusters — hot cluster on SSD for real-time data and cold cluster 
 
 ### 4.5 Cons
 
-- **Very large cold storage footprint** (~45.1 TB for 5 years)
+- **Very large cold storage footprint** (~31.5 TB for 5 years)
 - Cold cluster needs significant RAM for indexes over ~157.5 billion documents
 - Cold cluster requires sharding (too large for single replica set)
 - Queries on cold raw data are slower (HDD + massive dataset)
@@ -479,11 +464,11 @@ Two MongoDB clusters — hot cluster on SSD for real-time data and cold cluster 
 
 | Component | Size | Storage Type |
 |-----------|------|-------------|
-| Hot cluster (1yr raw, snappy) | ~18.0 TB | SSD |
-| Cold cluster (5yr raw, zstd) | ~45.1 TB | HDD |
-| Cold cluster (5yr hourly roll-ups, zstd) | ~550 GB | HDD |
+| Hot cluster (1yr raw, assumed 10:1) | ~6.3 TB | SSD |
+| Cold cluster (5yr raw, assumed 10:1) | ~31.5 TB | HDD |
+| Cold cluster (5yr hourly roll-ups, assumed 10:1) | ~1.1 TB | HDD |
 | Cold cluster (5yr daily roll-ups, zstd) | ~45 GB | HDD |
-| **Total** | **~63.6 TB** | |
+| **Total** | **~39.0 TB** | |
 
 ### 4.7 When to Choose This Strategy
 
@@ -547,11 +532,11 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 │  │  │positions_raw  │ │  │  │voyage_rollups│ │               │             │
 │  │  │(timeseries)   │ │  │  │              │ │               │             │
 │  │  │               │ │  │  │5-year retain │ │               │             │
-│  │  │12-month       │ │  │  │~600 GB total │ │               │             │
+│  │  │12-month       │ │  │  │~1.15 TB total│ │               │             │
 │  │  │retention      │ │  │  └──────────────┘ │               │             │
 │  │  └──────────────┘ │  │                    │               │             │
 │  │                    │  └────────────────────┘               │             │
-│  │  Size: ~18.0 TB    │                                       │             │
+│  │  Size: ~6.3 TB     │                                       │             │
 │  │                    │                                       │             │
 │  └────────┬───────────┘                                       │             │
 │           │                                                   │             │
@@ -566,7 +551,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 │  │     • Write to MongoDB Roll-Up Store (zstd)                           │  │
 │  │                                                                       │  │
 │  │  3. EXPORT: Convert raw documents to Apache Parquet format            │  │
-│  │     • Columnar compression (15–20× ratio)                             │  │
+│  │     • Capacity assumptions use 10:1 compression for sizing            │  │
 │  │     • Partition by year / month / vesselId                            │  │
 │  │     • Upload to MinIO via S3 PUT API                                  │  │
 │  │     • Batch: ~600M records/week                                       │  │
@@ -603,13 +588,13 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 │  │        └── ...                                                        ││
 │  │                                                                       ││
 │  │  Properties:                                                          ││
-│  │  • Parquet columnar format (15–20× compression on timeseries)         ││
+│  │  • Capacity calculations in this report use assumed 10:1 compression  ││
 │  │  • Immutable files — append only, never modified                     ││
 │  │  • Erasure coding = data protection with ~1.5× overhead (vs 3×)      ││
 │  │  • Scales linearly — add disks/nodes for capacity                    ││
 │  │  • No license cost (open source)                                      ││
 │  │                                                                       ││
-│  │  Size: ~18.0 TB (5 years, 1,25,000 vessels, Parquet compressed)       ││
+│  │  Size: ~31.5 TB (5 years, 1,25,000 vessels, assumed 10:1)            ││
 │  │                                                                       ││
 │  └─────────────────────────────────────────────────────────────────────┘│
 │                                                                          │
@@ -659,7 +644,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 ### 5.4 Pros
 
 - **Lowest cold storage cost** — MinIO on commodity HDD with erasure coding
-- Parquet delivers best-in-class compression for timeseries (15–20× ratio)
+- Uses object storage economics for cold archive while report sizing assumes 10:1 compression
 - Roll-ups in MongoDB serve 95% of cold queries at native speed
 - Raw data fully preserved for compliance — no data loss
 - MinIO scales linearly to petabytes (just add disks)
@@ -687,12 +672,12 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 
 | Component | Size | Storage Type |
 |-----------|------|-------------|
-| MongoDB hot cluster (1yr raw, snappy) | ~18.0 TB | SSD |
-| MongoDB roll-up store (5yr, hourly+daily, zstd) | ~600 GB | HDD |
-| MinIO archive (5yr raw, Parquet) | ~18.0 TB | HDD (erasure coded) |
-| MinIO with erasure overhead (~1.5×) | ~27.0 TB | HDD actual disk |
-| **Total usable** | **~36.6 TB** | |
-| **Total raw disk (with erasure)** | **~45.6 TB** | |
+| MongoDB hot cluster (1yr raw, assumed 10:1) | ~6.3 TB | SSD |
+| MongoDB roll-up store (5yr, hourly+daily, assumed 10:1) | ~1.15 TB | HDD |
+| MinIO archive (5yr raw, assumed 10:1) | ~31.5 TB | HDD (erasure coded) |
+| MinIO with erasure overhead (~1.5×) | ~47.3 TB | HDD actual disk |
+| **Total usable** | **~39.0 TB** | |
+| **Total raw disk (with erasure)** | **~54.8 TB** | |
 
 ### 5.7 When to Choose This Strategy
 
@@ -714,35 +699,35 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 │  Starting: 5 years, 1,25,000 vessels, 1000 rec/sec, raw = ~315.4 TB    │
 │                                                                         │
 │  ┌───────────────────────────────────────────────────────────────┐     │
-│  │ Lever 1: MongoDB Timeseries + Snappy (hot default)             │     │
-│  │ 315.4 TB → 90.1 TB                              3.5× saved   │     │
+│  │ Lever 1: Apply assumed 10:1 compression                        │     │
+│  │ 315.4 TB → 31.5 TB                              10× saved    │     │
 │  └───────────────────────────────────────────────────────────────┘     │
 │                          │                                              │
 │                          ▼                                              │
 │  ┌───────────────────────────────────────────────────────────────┐     │
-│  │ Lever 2: Switch cold to Zstd compression                       │     │
-│  │ 90.1 TB → 45.1 TB                               2× saved     │     │
+│  │ Lever 2: Hourly pre-aggregation roll-ups (cold only)           │     │
+│  │ 31.5 TB → ~1.1 TB                               ~29× saved   │     │
 │  └───────────────────────────────────────────────────────────────┘     │
 │                          │                                              │
 │                          ▼                                              │
 │  ┌───────────────────────────────────────────────────────────────┐     │
-│  │ Lever 3: Hourly pre-aggregation roll-ups (cold only)           │     │
-│  │ 45.1 TB → ~550 GB                                ~82× saved   │     │
+│  │ Lever 3: Daily pre-aggregation (for reporting workloads)       │     │
+│  │ 31.5 TB → ~45 GB                                ~700× saved  │     │
 │  └───────────────────────────────────────────────────────────────┘     │
 │                          │                                              │
 │                          ▼                                              │
 │  ┌───────────────────────────────────────────────────────────────┐     │
-│  │ Lever 4: Parquet/Columnar for raw archive (if retaining raw)   │     │
-│  │ 45.1 TB (zstd raw) → ~18.0 TB (Parquet)         ~2.5× saved  │     │
+│  │ Lever 4: MinIO erasure coding overhead (physical disk)         │     │
+│  │ 31.5 TB usable → ~47.3 TB raw disk              ~1.5× overhead│     │
 │  └───────────────────────────────────────────────────────────────┘     │
 │                                                                         │
 │  FINAL STATES:                                                          │
 │  ─────────────                                                          │
-│  Strategy A: ~600 GB cold   (roll-ups only, raw discarded)              │
-│  Strategy B: ~45.6 TB cold  (raw in MongoDB zstd + roll-ups)            │
-│  Strategy C: ~18.6 TB cold  (raw in MinIO Parquet + roll-ups in Mongo)  │
+│  Strategy A: ~1.15 TB cold  (roll-ups only, raw discarded)              │
+│  Strategy B: ~31.5 TB cold  (raw in MongoDB + roll-ups)                 │
+│  Strategy C: ~31.5 TB cold  (raw in MinIO + roll-ups in Mongo)          │
 │                                                                         │
-│  vs storing everything raw in MongoDB (snappy): ~90.1 TB cold           │
+│  vs storing everything raw uncompressed: ~315.4 TB cold                 │
 │                                                                         │
 └────────────────────────────────────────────────────────────────────────┘
 ```
@@ -759,11 +744,11 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 │  INGEST (1,000 records/second, 1,25,000 vessels)                    │
 │    │                                                                │
 │    ▼                                                                │
-│  HOT TIER (MongoDB, SSD, Snappy, 0–12 months)                      │
+│  HOT TIER (MongoDB, SSD, assumed 10:1, 0–12 months)                │
 │    │  • Full granularity                                            │
 │    │  • Full indexing, sharded for write throughput                  │
 │    │  • Real-time queries                                           │
-│    │  • ~18.0 TB storage                                            │
+│    │  • ~6.3 TB storage                                             │
 │    │                                                                │
 │    │──── [Weekly migration job at 12-month boundary] ────           │
 │    │                                                                │
@@ -771,7 +756,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 │  COMPUTE ROLL-UPS (reduce granularity to minutes/hours for cold)    │
 │    │  • Aggregation pipeline: hourly, daily, voyage summaries       │
 │    │  • Hourly granularity = 29× fewer documents                    │
-│    │  • Zstd compression on cold write = additional 50% savings     │
+│    │  • Capacity planning uses assumed 10:1 compression             │
 │    │  • ~600M records/week processed                                │
 │    │                                                                │
 │    ├──── Strategy A: Discard raw, keep roll-ups only                │
@@ -833,7 +818,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 
 ## 9. Recommendation
 
-### 10.1 Pre-Aggregation is the Foundation
+### 9.1 Pre-Aggregation is the Foundation
 
 **The pre-aggregation roll-up pattern should be implemented regardless of which infrastructure strategy is selected.** It is the single most impactful technique:
 
@@ -844,7 +829,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 - Works equally well with any cold storage backend
 - Keeping cold data at minute or hour granularity still answers 95% of historical queries
 
-### 10.2 Strategy Selection Guide
+### 9.2 Strategy Selection Guide
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -854,7 +839,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 │       ├── NO                                                    │
 │       │   └── ✅ STRATEGY A: MongoDB Hot + Cold (Roll-Ups Only) │
 │       │       • Lowest cost, simplest operations                │
-│       │       • Cold tier: ~600 GB                              │
+│       │       • Cold tier: ~1.15 TB                             │
 │       │       • Best if no compliance/retention mandate          │
 │       │                                                         │
 │       └── YES                                                   │
@@ -866,22 +851,22 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 │            │   └── ✅ STRATEGY B: MongoDB Hot + Cold (Raw)       │
 │            │       • Full raw data queryable via MongoDB         │
 │            │       • Same query language everywhere              │
-│            │       • Cold tier: ~45.6 TB                         │
+│            │       • Cold tier: ~31.5 TB                         │
 │            │       • Higher hardware investment                  │
 │            │                                                    │
 │            └── YES (minimize cost, raw access is rare)           │
 │                └── ✅ STRATEGY C: MongoDB Hot + MinIO Cold        │
 │                    • Cheapest raw archival (Parquet + MinIO)     │
 │                    • Roll-ups in MongoDB for 95% of queries     │
-│                    • Cold tier: ~18.6 TB                         │
+│                    • Cold tier: ~31.5 TB                         │
 │                    • Accept SQL for raw queries + more ops       │
 │                                                                 │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-### 10.3 Universal Recommendations (All Strategies)
+### 9.3 Universal Recommendations (All Strategies)
 
-1. **Use Zstd compression** on all cold-tier collections (~50% savings over snappy)
+1. **Use a documented sizing assumption** (10:1 in this report) and validate with PoC on production-like data
 2. **Implement hourly + daily roll-ups** — covers 95% of historical query needs
 3. **Reduce cold granularity to minutes or hours** — the most powerful storage reduction lever
 4. **Design roll-up schema upfront** — changing it retroactively is expensive for already-processed data
@@ -891,7 +876,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 
 ---
 
-> **Note:** All storage sizes, document counts, and compression ratios presented in this report are illustrative estimates based on the stated data profile (1,25,000 vessels, 1,000 records/sec, ~2 KB/document). Actual sizes will vary depending on document structure, field count, index design, data distribution patterns, and compression effectiveness on real workloads. These calculations are provided as reference examples to compare the relative impact of each strategy. Actual sizing should be validated through proof-of-concept testing with representative production data.
+> **Note:** All storage sizes, document counts, and compression ratios presented in this report are illustrative estimates based on the stated data profile (1,25,000 vessels, 1,000 records/sec, ~2 KB/document) and an assumed effective compression ratio of 10:1. Actual sizes will vary depending on document structure, field count, index design, data distribution patterns, and compression effectiveness on real workloads. These calculations are provided as reference examples to compare the relative impact of each strategy. Actual sizing should be validated through proof-of-concept testing with representative production data.
 
 ---
 
