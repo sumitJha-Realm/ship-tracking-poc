@@ -668,18 +668,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 - Large Parquet export volume (~600M records/week)
 - Restore-on-demand adds orchestration overhead (temp collection lifecycle, index creation, cleanup, and access controls)
 
-### 5.6 Storage Estimate
-
-| Component | Size | Storage Type |
-|-----------|------|-------------|
-| MongoDB hot cluster (1yr raw, assumed 10:1) | ~6.3 TB | SSD |
-| MongoDB roll-up store (5yr, hourly+daily, assumed 10:1) | ~1.15 TB | HDD |
-| MinIO archive (5yr raw, assumed 10:1) | ~31.5 TB | HDD (erasure coded) |
-| MinIO with erasure overhead (~1.5×) | ~47.3 TB | HDD actual disk |
-| **Total usable** | **~39.0 TB** | |
-| **Total raw disk (with erasure)** | **~54.8 TB** | |
-
-### 5.7 When to Choose This Strategy
+### 5.6 When to Choose This Strategy
 
 - Cold storage cost is the primary driver
 - Raw data must be retained for compliance but is rarely accessed (<5% of queries)
