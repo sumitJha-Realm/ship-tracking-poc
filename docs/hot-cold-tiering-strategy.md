@@ -296,11 +296,8 @@ Two MongoDB clusters — a high-performance hot cluster on SSD for real-time dat
 ### 3.4 Pros
 
 - Uniform query interface — same MongoDB driver and query language for both tiers
-- Cold tier footprint reduced significantly for this scale (~1.15 TB for 5 years of 1,25,000 vessels)
 - Cold queries are fast (entire roll-up dataset fits in RAM)
-- Simple backup/restore on cold cluster (minutes, not hours)
-- Minimal cold-tier hardware requirements (64 GB RAM sufficient)
-- Low operational overhead for cold cluster
+- Lower cold-tier infrastructure and operations overhead than raw-retention designs
 - Application routing logic is simple (time range check)
 - Hourly or minute-level granularity on cold keeps queries meaningful while drastically reducing volume
 
@@ -309,7 +306,6 @@ Two MongoDB clusters — a high-performance hot cluster on SSD for real-time dat
 - **Raw data is discarded** — cannot answer "exact position at 14:32:07 on March 3, 2023"
 - Roll-up schema must be designed upfront; adding new metrics retroactively is impossible for already-aggregated data
 - Migration service is a custom component that must be reliable
-- Two clusters to manage (though cold cluster is very lightweight)
 - If roll-up granularity is too coarse, some queries cannot be satisfied
 
 ### 3.6 Storage Estimate
@@ -443,21 +439,16 @@ Two MongoDB clusters — hot cluster on SSD for real-time data and cold cluster 
 
 - **Full data preservation** — every raw position report queryable for 5 years
 - Same MongoDB query language across hot and cold
-- Consistent sizing assumption (10:1) simplifies planning and capacity forecasting
 - Can answer any historical query at full granularity (no information loss)
 - Roll-ups accelerate common analytical queries (avoid scanning billions of docs)
-- Compliance/audit requirements fully met
-- Incident investigation possible at full resolution
+- Strong fit for compliance and investigation workflows requiring exact historical replay
 
 ### 4.5 Cons
 
 - **Very large cold storage footprint** (~31.5 TB for 5 years)
 - Cold cluster needs significant RAM for indexes over ~157.5 billion documents
-- Cold cluster requires sharding (too large for single replica set)
 - Queries on cold raw data are slower (HDD + massive dataset)
 - Migration moves ~600M records/week (network and compute intensive)
-- Higher hardware cost for cold tier
-- Backup/restore of cold cluster takes many hours
 - Index maintenance on billions of documents is operationally challenging
 
 ### 4.6 Storage Estimate
@@ -647,11 +638,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 - Uses object storage economics for cold archive while report sizing assumes 10:1 compression
 - Roll-ups in MongoDB serve 95% of cold queries at native speed
 - Raw data fully preserved for compliance — no data loss
-- MinIO scales linearly to petabytes (just add disks)
-- All cold components are open source — zero license cost
-- Immutable Parquet files simplify backup (object replication)
 - Clear separation: "queryable cold" (MongoDB roll-ups) vs "archival cold" (MinIO)
-- MinIO supports lifecycle policies, versioning, and retention locks
 - Storage overhead for protection is only ~1.5× (erasure coding vs 3× replication)
 - Supports restore-on-demand for exceptional MongoDB-native cold queries without keeping all raw cold data in MongoDB
 
@@ -660,11 +647,8 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 - **Three systems to manage** (MongoDB, MinIO, query engine)
 - Raw data queries require SQL (Trino/DuckDB) — different language than MongoDB
 - Higher operational complexity (ETL has two outputs: roll-ups + Parquet)
-- Query engine cluster is additional infrastructure
 - Team needs both MongoDB and data engineering/SQL skills
-- Parquet schema evolution requires careful planning
 - Raw queries on MinIO are slow (10s–2min for large scans) — not suitable for real-time
-- More moving parts = more potential failure points
 - Large Parquet export volume (~600M records/week)
 - Restore-on-demand adds orchestration overhead (temp collection lifecycle, index creation, cleanup, and access controls)
 
