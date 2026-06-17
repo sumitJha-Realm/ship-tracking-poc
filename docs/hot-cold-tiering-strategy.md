@@ -499,7 +499,7 @@ Two MongoDB clusters — hot cluster on SSD for real-time data and cold cluster 
 
 ### 5.1 Summary
 
-MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storage) on commodity HDD hardware for long-term cold storage. Raw data exported as Parquet files (columnar format) to MinIO. Pre-aggregated roll-ups stored in a small MongoDB instance for fast analytical queries. Cold raw data queryable via SQL engines (Trino, DuckDB, or Apache Spark).
+MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storage) on commodity HDD hardware for long-term cold storage. Raw data exported as Parquet files (columnar format) to MinIO. Pre-aggregated roll-ups stored in a small MongoDB instance for fast analytical queries. Cold raw data queryable via SQL engines (Trino, DuckDB, or Apache Spark). For exception workflows, cold slices can be restored on demand from MinIO into temporary MongoDB collections to run MongoDB-native queries.
 
 **Use case:** Cost-sensitive environments needing raw data retention at minimal expense, with most cold queries served by roll-ups and only occasional raw data access.
 
@@ -643,10 +643,15 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 │            │                                                     │
 │            └── NO (needs exact raw positions)                    │
 │                 │                                                │
-│                 └──► Trino/DuckDB over MinIO Parquet             │
-│                      Latency: 10–120 seconds                     │
-│                      Serves: 5% of cold queries                  │
-│                      (incident investigation, compliance audit)  │
+│                 ├──► Trino/DuckDB over MinIO Parquet             │
+│                 │    Latency: 10–120 seconds                     │
+│                 │    Serves: 5% of cold queries                  │
+│                 │    (incident investigation, compliance audit)  │
+│                 │                                                │
+│                 └──► Restore-on-demand to temporary MongoDB      │
+│                      collection (for Mongo-native/geo queries)   │
+│                      Latency: minutes (batch dependent)          │
+│                      Data expires by TTL after query completion  │
 │                                                                  │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -663,6 +668,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 - Clear separation: "queryable cold" (MongoDB roll-ups) vs "archival cold" (MinIO)
 - MinIO supports lifecycle policies, versioning, and retention locks
 - Storage overhead for protection is only ~1.5× (erasure coding vs 3× replication)
+- Supports restore-on-demand for exceptional MongoDB-native cold queries without keeping all raw cold data in MongoDB
 
 ### 5.5 Cons
 
@@ -675,6 +681,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 - Raw queries on MinIO are slow (10s–2min for large scans) — not suitable for real-time
 - More moving parts = more potential failure points
 - Large Parquet export volume (~600M records/week)
+- Restore-on-demand adds orchestration overhead (temp collection lifecycle, index creation, cleanup, and access controls)
 
 ### 5.6 Storage Estimate
 
@@ -695,6 +702,7 @@ MongoDB hot cluster for real-time operations. MinIO (S3-compatible object storag
 - Team has SQL/data engineering skills for Trino/DuckDB
 - Data volumes are expected to grow significantly
 - Audit trail or regulatory retention mandates exist
+- Occasional historical cases need MongoDB-specific query features (for example geospatial filters) via temporary rehydration
 
 ---
 
