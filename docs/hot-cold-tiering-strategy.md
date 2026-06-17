@@ -212,33 +212,7 @@ For cold data, the granularity of roll-ups can be tuned to **minutes or hours** 
 | "Speed profile during specific voyage" | Hourly sufficient |
 | "Exact position at 14:32:07" | Not possible with roll-ups (need raw) |
 
-### 2.4 Roll-Up Document Schema (Ship Tracking)
 
-**Hourly Roll-Up:**
-- vesselId, hour_bucket (timestamp)
-- avg_speed, max_speed, min_speed (knots)
-- avg_heading, avg_course (degrees)
-- start_position (lat/lon), end_position (lat/lon)
-- distance_traveled_nm
-- position_count (source record count for validation)
-- nav_status (majority value in window)
-
-**Daily Roll-Up:**
-- vesselId, day_bucket (date)
-- total_distance_nm
-- avg_speed, max_speed
-- hours_underway, hours_at_anchor, hours_moored
-- port_entries (array), port_exits (array)
-- route_bounding_box (geo bounds)
-
-**Voyage Roll-Up:**
-- vesselId, voyage_id
-- departure_port, departure_time
-- arrival_port, arrival_time
-- total_distance_nm, duration_hours
-- avg_speed, route_geometry (simplified LineString)
-
----
 
 ## 3. Strategy A: MongoDB Hot + MongoDB Cold with Pre-Aggregated Roll-Ups
 
